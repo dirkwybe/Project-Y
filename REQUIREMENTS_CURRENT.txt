@@ -1,0 +1,61 @@
+﻿FastLane - Current Requirements and Features
+
+Scope
+- Platforms: iOS and Android (Expo / React Native).
+- Data: Offline-first, local-only storage using SQLite.
+- No login or sync in the current build.
+- Week starts on Monday.
+- Edits are allowed without blocking or enforcement.
+- Smart reminders with hydration prompts.
+- Minimalist UI with calm, warm tones and dark mode.
+
+Core Functional Requirements
+- Fasting control
+  - Start and stop a single active fast.
+  - Adjust fast start/end using a guided modal with date/time picker.
+  - Protocols: 15:9, 16:8, 17:7, 18:6, custom.
+- Insights (weekly focus)
+  - Weekly average fasting duration.
+  - Weekly total fasting time.
+  - Longest fast in the week.
+  - Adherence percentage against the selected protocol.
+  - Weekly fasting bar chart (Mon to Sun).
+  - Weekly daily calories bar chart (Mon to Sun).
+- Eating window tracking
+  - Add simple notes with optional calorie value.
+  - Daily calorie total displayed for today.
+  - Daily calorie goal setting (manual).
+- Notifications
+  - Smart reminders for fast completion.
+  - Optional hydration reminders with configurable interval.
+
+UI/UX Features
+- Bottom tab navigation: Home, Insights, Eating, History, Settings.
+- Home
+  - Active fast timer, protocol, expected end time.
+  - Start/Stop and Adjust actions.
+  - Quick weekly metrics.
+- Insights
+  - Weekly fasting chart.
+  - Weekly daily calories chart.
+- Eating
+  - Notes entry with optional calories.
+  - Recent notes list.
+- History
+  - Fasting sessions list, tap to edit.
+- Settings
+  - Protocol selection and custom hours.
+  - Reminders toggles and hydration interval.
+  - Daily calorie goal.
+  - Theme selection.
+  - Disclaimer.
+
+Non-Functional Requirements
+- Offline-first and local storage by default.
+- Quick startup and lightweight UI.
+- Stable across time changes (manual edits allowed).
+- Accessible tap targets and readable text.
+
+Disclaimer
+- The app is for informational and tracking purposes only and is not medical advice.
+  Users should consult a healthcare professional before making changes to diet or fasting.

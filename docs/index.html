@@ -1,0 +1,147 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fasting Lane</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f1ea;
+        --bg-alt: #ede6dc;
+        --card: #ffffff;
+        --text: #1b1c1a;
+        --muted: #6a6760;
+        --accent: #2f6b5e;
+        --border: #e2d9cd;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121514;
+          --bg-alt: #0b0e0e;
+          --card: #1b201f;
+          --text: #f2f1ed;
+          --muted: #a8a39b;
+          --accent: #e1b35d;
+          --border: #2b3230;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+        color: var(--text);
+        background: linear-gradient(180deg, var(--bg), var(--bg-alt));
+      }
+      .wrap {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 48px 20px 64px;
+      }
+      .hero {
+        display: grid;
+        gap: 20px;
+        padding: 28px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 18px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 40px;
+        letter-spacing: 0.3px;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .grid {
+        display: grid;
+        gap: 16px;
+        margin-top: 20px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 16px;
+        padding: 18px;
+      }
+      .cta {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 10px 16px;
+        border-radius: 12px;
+        background: var(--accent);
+        color: #111;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      ul {
+        margin: 8px 0 0 18px;
+        color: var(--muted);
+      }
+      footer {
+        margin-top: 28px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      @media (min-width: 700px) {
+        .grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="hero">
+        <span class="pill">Intermittent fasting tracker</span>
+        <h1>Fasting Lane</h1>
+        <p>
+          A calm, focused fasting companion. Start and stop fasts with a tap,
+          adjust times when life happens, and see clean weekly insights to stay consistent.
+        </p>
+        <a class="cta" href="support.html">Get support</a>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <strong>Simple fasting timer</strong>
+          <p>One active fast at a time with clear start/stop controls.</p>
+        </div>
+        <div class="card">
+          <strong>Guided adjustments</strong>
+          <p>Edit start/end times with an easy, guided picker.</p>
+        </div>
+        <div class="card">
+          <strong>Weekly insights</strong>
+          <p>Average duration, totals, and adherence at a glance.</p>
+        </div>
+        <div class="card">
+          <strong>Eating window notes</strong>
+          <p>Track what you eat and optional calories to stay mindful.</p>
+        </div>
+        <div class="card">
+          <strong>Calm reminders</strong>
+          <p>Smart reminders and hydration nudges when you want them.</p>
+        </div>
+        <div class="card">
+          <strong>Private by default</strong>
+          <p>All data stays on your device. No account required.</p>
+        </div>
+      </div>
+
+      <footer>
+        © 2025 Fasting Lane · <a href="privacy.html">Privacy Policy</a>
+      </footer>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+﻿FastLane - Future Enhancements
+
+Accounts and Sync
+- Optional accounts/login.
+- Multi-device sync and cloud backup.
+
+Nutrition and Food Tracking
+- Food database integration.
+- Barcode scanning for packaged foods.
+- Macros and nutrition breakdowns.
+
+Health Platform Integrations
+- Apple Health integration.
+- Google Fit integration.
+
+Personalization
+- Tailored goals based on user profile (age, sex, weight, activity).
+- Adaptive fasting recommendations and insights.
+
+Insights and Analytics
+- Correlations (fasting duration vs. calories).
+- Long-term trends beyond weekly views.
+- Goal streaks and habit scoring.
+
+UX Enhancements
+- Advanced reminders (custom schedules and smart nudges).
+- Onboarding wizard for first-time setup.
+- Export data (CSV/JSON).
