@@ -150,7 +150,8 @@ const enrichItemsWithCalories = async (items) => {
     const grams = Number(item.grams) || null;
     let calories = null;
     let usdaName = null;
-    const count = extractCount(`${item.portion ?? ''} ${item.name ?? ''}`);
+    const portionText = item.portion ?? '';
+    const count = extractCount(portionText) ?? extractCount(`${portionText} ${item.name ?? ''}`);
     let usda = null;
     try {
       usda = await fetchUSDA(name);
