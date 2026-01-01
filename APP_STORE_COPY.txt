@@ -1,10 +1,16 @@
 Fasting Lane - App Store Copy
 
 Promotional text (<=170 chars)
-Track fasting with calm focus, log meals, and use optional smart photo tools to estimate calories or get fridge-based meal ideas.
+Track fasting with calm focus, log meals, and use optional AI tools: meal photo estimates, "If I eat this", portion coach, and fridge-based ideas.
 
 Description
 Fasting Lane is a calm, minimalist intermittent fasting companion. Track fasts, eating windows, and mindful notes. Stay consistent with gentle reminders and weekly insights.
+
+Optional AI features (on demand):
+- Smart meal photo estimates with editable items
+- "If I eat this" text estimates
+- Portion coach tips
+- Fridge photo meal ideas under a calorie limit
 
 Features
 - Start/stop fasting with one tap and adjust times anytime
@@ -21,7 +27,7 @@ Privacy
 All core data is stored locally on your device. Smart tools send photos or text to our servers and AI provider only when you use them.
 
 Keywords (<=100 chars)
-fasting,intermittent fasting,calorie tracker,meal photo,hydration,reminders,meal ideas
+fasting,intermittent fasting,calorie tracker,meal photo,AI,portion coach,fridge ideas
 
 Support URL
 https://dirkwybe.github.io/Project-Y/support.html
