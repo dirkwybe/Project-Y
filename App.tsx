@@ -1,4 +1,4 @@
-﻿import { StatusBar } from 'expo-status-bar';
+import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import * as SQLite from 'expo-sqlite';
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
@@ -74,6 +74,26 @@ type ScanItem = {
 };
 
 type ThemePreference = 'system' | 'light' | 'dark';
+type HydrationMode = 'fasting' | 'eating' | 'both';
+
+type FoodEstimateResult = {
+  items: ScanItem[];
+  totalCalories: number;
+  disclaimer?: string;
+};
+
+type PortionCoachResult = {
+  estimatedCalories: number;
+  targetCalories: number | null;
+  adjustments: string[];
+  summary: string;
+};
+
+type GoalTuningResult = {
+  recommendedProtocol: string;
+  rationale: string;
+  note?: string;
+};
 
 type SettingsState = {
   protocolKey: string;
@@ -81,6 +101,7 @@ type SettingsState = {
   customEatingHours: number;
   remindersEnabled: boolean;
   hydrationEnabled: boolean;
+  hydrationMode: HydrationMode;
   hydrationIntervalHours: number;
   dailyCalorieGoal: number;
   themePreference: ThemePreference;
@@ -106,13 +127,14 @@ type Theme = {
   shadow: string;
 };
 
-type ScreenProps = {
-  theme: Theme;
-  now: number;
-  protocolLabel: string;
-  activeSession: FastingSession | null;
-  activeDuration: number;
-  expectedEnd: number | false | null;
+  type ScreenProps = {
+    theme: Theme;
+    now: number;
+    protocolLabel: string;
+    activeSession: FastingSession | null;
+    isFasting: boolean;
+    activeDuration: number;
+    expectedEnd: number | false | null;
   avgWeekMs: number;
   longestWeekMs: number;
   adherencePct: number;
@@ -134,6 +156,7 @@ type ScreenProps = {
     end: number;
     totalCalories: number;
     noteCount: number;
+    notes: EatingNote[];
   }[];
   nextReminderLabel: string;
   nextHydrationLabel: string;
@@ -148,6 +171,24 @@ type ScreenProps = {
   noteCalories: string;
   setNoteText: (value: string) => void;
   setNoteCalories: (value: string) => void;
+  ifEatText: string;
+  setIfEatText: (value: string) => void;
+  ifEatResult: FoodEstimateResult | null;
+  ifEatBusy: boolean;
+  onEstimateFood: () => void;
+  onClearFoodEstimate: () => void;
+  portionText: string;
+  setPortionText: (value: string) => void;
+  portionTarget: string;
+  setPortionTarget: (value: string) => void;
+  portionResult: PortionCoachResult | null;
+  portionBusy: boolean;
+  onPortionCoach: () => void;
+  onClearPortionCoach: () => void;
+  goalTuningResult: GoalTuningResult | null;
+  goalTuningBusy: boolean;
+  onRequestGoalTuning: () => void;
+  onApplyGoalTuning: () => void;
   onUpdateSetting: <K extends keyof SettingsState>(
     key: K,
     value: SettingsState[K]
@@ -164,16 +205,17 @@ type ScreenProps = {
 
 const Tab = createBottomTabNavigator<TabParamList>();
 
-const DEFAULT_SETTINGS: SettingsState = {
-  protocolKey: '16:8',
-  customFastingHours: 16,
-  customEatingHours: 8,
-  remindersEnabled: true,
-  hydrationEnabled: true,
-  hydrationIntervalHours: 3,
-  dailyCalorieGoal: 0,
-  themePreference: 'system',
-};
+  const DEFAULT_SETTINGS: SettingsState = {
+    protocolKey: '16:8',
+    customFastingHours: 16,
+    customEatingHours: 8,
+    remindersEnabled: true,
+    hydrationEnabled: true,
+    hydrationMode: 'fasting',
+    hydrationIntervalHours: 3,
+    dailyCalorieGoal: 0,
+    themePreference: 'system',
+  };
 
 const PROTOCOLS = [
   { key: '15:9', label: '15:9', fastingHours: 15, eatingHours: 9 },
@@ -367,9 +409,13 @@ const HomeScreen = ({
   onStartFast,
   onStopFast,
   onOpenEdit,
-}: ScreenProps) => (
-  <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+}: ScreenProps) => {
+  const suggestedTarget =
+    dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
+
+  return (
+    <ScreenShell theme={theme}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <HeaderBar
         theme={theme}
         title="Fasting Lane"
@@ -476,13 +522,14 @@ const HomeScreen = ({
                 </Text>
               </View>
             </View>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                { backgroundColor: theme.accent, shadowColor: theme.shadow },
-              ]}
-              onPress={onStartFast}
-            >
+              <Pressable
+                style={[
+                  styles.primaryButton,
+                  styles.buttonSpacing,
+                  { backgroundColor: theme.accent, shadowColor: theme.shadow },
+                ]}
+                onPress={onStartFast}
+              >
               <Text style={styles.primaryButtonText}>Start fasting</Text>
             </Pressable>
           </>
@@ -509,7 +556,8 @@ const HomeScreen = ({
       </View>
     </ScrollView>
   </ScreenShell>
-);
+  );
+};
 
 const InsightsScreen = ({
   theme,
@@ -518,9 +566,13 @@ const InsightsScreen = ({
   maxDailyMs,
   dailyCaloriesTotals,
   maxDailyCalories,
+  goalTuningResult,
+  goalTuningBusy,
+  onRequestGoalTuning,
+  onApplyGoalTuning,
 }: ScreenProps) => (
   <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <HeaderBar
         theme={theme}
         title="Insights"
@@ -550,11 +602,11 @@ const InsightsScreen = ({
         </Text>
       </View>
 
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Daily Calories</Text>
-        <View style={styles.chart}>
-          {dailyCaloriesTotals.map((day) => (
-            <View key={day.label} style={styles.chartCol}>
+        <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Daily Calories</Text>
+          <View style={styles.chart}>
+            {dailyCaloriesTotals.map((day) => (
+              <View key={day.label} style={styles.chartCol}>
               <View
                 style={[
                   styles.chartBar,
@@ -572,12 +624,52 @@ const InsightsScreen = ({
                 {day.totalCalories}
               </Text>
             </View>
-          ))}
+            ))}
+          </View>
         </View>
-      </View>
-    </ScrollView>
-  </ScreenShell>
-);
+
+        <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Goal tuning</Text>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Get a recommended fasting window based on your recent patterns.
+          </Text>
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: goalTuningBusy ? 0.7 : 1 },
+              ]}
+              onPress={onRequestGoalTuning}
+              disabled={goalTuningBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {goalTuningBusy ? 'Analyzing...' : 'Get recommendation'}
+              </Text>
+            </Pressable>
+            {goalTuningResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onApplyGoalTuning}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Apply</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {goalTuningResult ? (
+            <View style={styles.goalResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Recommended: {goalTuningResult.recommendedProtocol}
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.rationale}</Text>
+              {goalTuningResult.note ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.note}</Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      </ScrollView>
+    </ScreenShell>
+  );
 
 const EatingScreen = ({
   theme,
@@ -590,15 +682,30 @@ const EatingScreen = ({
   noteCalories,
   setNoteText,
   setNoteCalories,
+  ifEatText,
+  setIfEatText,
+  ifEatResult,
+  ifEatBusy,
+  onEstimateFood,
+  onClearFoodEstimate,
+  portionText,
+  setPortionText,
+  portionTarget,
+  setPortionTarget,
+  portionResult,
+  portionBusy,
+  onPortionCoach,
+  onClearPortionCoach,
   onAddNote,
   onScanFoodPhoto,
   scanBusy,
   scanStatus,
   onDeleteNote,
   onOpenEditNote,
+  isFasting,
 }: ScreenProps) => (
   <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <HeaderBar
         theme={theme}
         title="Eating Window"
@@ -614,41 +721,52 @@ const EatingScreen = ({
           Daily calories: {todayCalories}
           {dailyCalorieGoal > 0 ? ` / ${dailyCalorieGoal}` : ''}
         </Text>
-        <View style={styles.noteRow}>
-          <TextInput
-            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-            placeholder="Quick note"
-            placeholderTextColor={theme.muted}
-            value={noteText}
-            onChangeText={setNoteText}
-          />
-          <TextInput
-            style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-            placeholder="kcal"
-            placeholderTextColor={theme.muted}
-            value={noteCalories}
-            onChangeText={setNoteCalories}
-            keyboardType="numeric"
-          />
-        </View>
-        <View style={styles.row}>
-          <Pressable
-            style={[
-              styles.primaryButton,
-              { backgroundColor: theme.accent, shadowColor: theme.shadow },
-            ]}
-            onPress={onAddNote}
-          >
-            <Text style={styles.primaryButtonText}>Add note</Text>
-          </Pressable>
-          <Pressable
-            style={[
-              styles.secondaryButton,
-              { borderColor: theme.border, opacity: scanBusy ? 0.6 : 1 },
-            ]}
-            onPress={onScanFoodPhoto}
-            disabled={scanBusy}
-          >
+          <View style={[styles.noteRow, isFasting ? styles.disabledRow : null]}>
+            <TextInput
+              style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+              placeholder="Quick note"
+              placeholderTextColor={theme.muted}
+              value={noteText}
+              onChangeText={setNoteText}
+              editable={!isFasting}
+            />
+            <TextInput
+              style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+              placeholder="kcal"
+              placeholderTextColor={theme.muted}
+              value={noteCalories}
+              onChangeText={setNoteCalories}
+              keyboardType="numeric"
+              editable={!isFasting}
+            />
+          </View>
+          {isFasting ? (
+            <Text style={[styles.meta, styles.metaStrong, { color: theme.muted }]}>
+              Notes are available during eating windows.
+            </Text>
+          ) : null}
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: isFasting ? 0.6 : 1 },
+              ]}
+              onPress={onAddNote}
+              disabled={isFasting}
+            >
+              <Text style={styles.primaryButtonText}>Add note</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.secondaryButton,
+                {
+                  borderColor: theme.border,
+                  opacity: scanBusy || isFasting ? 0.6 : 1,
+                },
+              ]}
+              onPress={onScanFoodPhoto}
+              disabled={scanBusy || isFasting}
+            >
             <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
               {scanBusy ? 'Scanning...' : 'Scan photo'}
             </Text>
@@ -662,13 +780,126 @@ const EatingScreen = ({
         ) : scanStatus ? (
           <Text style={[styles.meta, { color: theme.muted }]}>{scanStatus}</Text>
         ) : null}
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Photo estimates are approximate. Review before saving.
-        </Text>
-      </View>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Photo estimates are approximate. Review before saving.
+          </Text>
+        </View>
 
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Window notes</Text>
+        <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Smart tools</Text>
+          <View style={styles.smartBlock}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>If I eat this</Text>
+            <TextInput
+              style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+              placeholder="Example: Turkey wrap and a latte"
+              placeholderTextColor={theme.muted}
+              value={ifEatText}
+              onChangeText={setIfEatText}
+            />
+            <View style={styles.row}>
+              <Pressable
+                style={[
+                  styles.primaryButton,
+                  { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
+                ]}
+                onPress={onEstimateFood}
+                disabled={ifEatBusy}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {ifEatBusy ? 'Estimating...' : 'Estimate'}
+                </Text>
+              </Pressable>
+              {ifEatResult ? (
+                <Pressable
+                  style={[styles.secondaryButton, { borderColor: theme.border }]}
+                  onPress={onClearFoodEstimate}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {ifEatResult ? (
+              <View style={styles.smartResult}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  Estimated total: {ifEatResult.totalCalories} kcal
+                </Text>
+                {ifEatResult.items.map((item, index) => (
+                  <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                    - {item.name}
+                    {item.calories !== null && item.calories !== undefined
+                      ? ` (${item.calories} kcal)`
+                      : ''}
+                  </Text>
+                ))}
+                {ifEatResult.disclaimer ? (
+                  <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+
+          <View style={[styles.smartDivider, { backgroundColor: theme.border }]} />
+
+          <View style={styles.smartBlock}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>Portion coach</Text>
+            <TextInput
+              style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+              placeholder="Example: Bowl of pasta with tomato sauce"
+              placeholderTextColor={theme.muted}
+              value={portionText}
+              onChangeText={setPortionText}
+            />
+            <TextInput
+              style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+              placeholder={suggestedTarget ? `Target kcal (e.g., ${suggestedTarget})` : 'Target kcal (optional)'}
+              placeholderTextColor={theme.muted}
+              value={portionTarget}
+              onChangeText={setPortionTarget}
+              keyboardType="numeric"
+            />
+            <View style={styles.row}>
+              <Pressable
+                style={[
+                  styles.primaryButton,
+                  { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: portionBusy ? 0.7 : 1 },
+                ]}
+                onPress={onPortionCoach}
+                disabled={portionBusy}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {portionBusy ? 'Coaching...' : 'Get tips'}
+                </Text>
+              </Pressable>
+              {portionResult ? (
+                <Pressable
+                  style={[styles.secondaryButton, { borderColor: theme.border }]}
+                  onPress={onClearPortionCoach}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {portionResult ? (
+              <View style={styles.smartResult}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  Estimated: {portionResult.estimatedCalories} kcal
+                  {portionResult.targetCalories !== null
+                    ? ` (Target ${portionResult.targetCalories})`
+                    : ''}
+                </Text>
+                <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
+                {portionResult.adjustments.map((tip, index) => (
+                  <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                    - {tip}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Window notes</Text>
         {currentWindowNotes.length === 0 ? (
           <Text style={[styles.meta, { color: theme.muted }]}>
             No notes in this window yet.
@@ -710,6 +941,7 @@ const EatingScreen = ({
     </ScrollView>
   </ScreenShell>
 );
+};
 
 const HistoryScreen = ({
   theme,
@@ -719,7 +951,7 @@ const HistoryScreen = ({
   eatingWindowsHistory,
 }: ScreenProps) => (
   <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <HeaderBar
         theme={theme}
         title="History"
@@ -766,8 +998,23 @@ const HistoryScreen = ({
               {formatDate(window.start)} - {formatDate(window.end)}
             </Text>
             <Text style={[styles.meta, { color: theme.muted }]}>
-              {window.totalCalories} kcal · {window.noteCount} notes
+              Total calories: {window.totalCalories} - {window.noteCount} notes
             </Text>
+            {window.notes.length > 0 ? (
+              <View style={styles.historyNotes}>
+                {window.notes.map((note) => (
+                  <Text
+                    key={note.id}
+                    style={[styles.historyNoteText, { color: theme.text }]}
+                  >
+                    - {note.text}
+                    {note.calories !== null && note.calories !== undefined
+                      ? ` (${note.calories} kcal)`
+                      : ''}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
           </View>
         ))}
       </View>
@@ -784,7 +1031,7 @@ const SettingsScreen = ({
   onSendTestReminder,
 }: ScreenProps) => (
   <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <HeaderBar
         theme={theme}
         title="Settings"
@@ -852,34 +1099,68 @@ const SettingsScreen = ({
           />
         </View>
 
-        <View style={styles.switchRow}>
-          <Text style={[styles.meta, { color: theme.text }]}>Hydration reminders</Text>
-          <Switch
-            value={settings.hydrationEnabled}
-            onValueChange={(value) => onUpdateSetting('hydrationEnabled', value)}
-          />
-        </View>
+          <View style={styles.switchRow}>
+            <Text style={[styles.meta, { color: theme.text }]}>Hydration reminders</Text>
+            <Switch
+              value={settings.hydrationEnabled}
+              onValueChange={(value) => onUpdateSetting('hydrationEnabled', value)}
+            />
+          </View>
 
-        <View style={styles.noteRow}>
-          <Text style={[styles.meta, { color: theme.muted }]}>Hydration interval</Text>
-          {[2, 3, 4].map((hours) => (
-            <Pressable
-              key={hours}
-              style={[
-                styles.pill,
-                {
-                  backgroundColor:
-                    settings.hydrationIntervalHours === hours ? theme.accent : theme.bg,
-                  borderColor: theme.border,
-                },
-              ]}
-              onPress={() => onUpdateSetting('hydrationIntervalHours', hours)}
-            >
-              <Text
+          <View style={styles.timingBlock}>
+            <Text style={[styles.meta, { color: theme.muted }]}>Hydration timing</Text>
+            <View style={styles.pillRowSingle}>
+              {(['fasting', 'eating', 'both'] as HydrationMode[]).map((mode) => (
+                <Pressable
+                  key={mode}
+                  style={[
+                    styles.pill,
+                    styles.pillCompact,
+                    {
+                      backgroundColor:
+                        settings.hydrationMode === mode ? theme.accent : theme.bg,
+                      borderColor: theme.border,
+                      opacity: settings.hydrationEnabled ? 1 : 0.5,
+                    },
+                  ]}
+                  onPress={() => onUpdateSetting('hydrationMode', mode)}
+                  disabled={!settings.hydrationEnabled}
+                >
+                  <Text
+                    style={[
+                      styles.pillText,
+                      { color: settings.hydrationMode === mode ? '#111' : theme.text },
+                    ]}
+                  >
+                    {mode === 'fasting' ? 'Fasting' : mode === 'eating' ? 'Eating' : 'Both'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.noteRow}>
+            <Text style={[styles.meta, { color: theme.muted }]}>Hydration interval</Text>
+            {[1, 2, 3, 4].map((hours) => (
+              <Pressable
+                key={hours}
                 style={[
-                  styles.pillText,
-                  { color: settings.hydrationIntervalHours === hours ? '#111' : theme.text },
+                  styles.pill,
+                  {
+                    backgroundColor:
+                      settings.hydrationIntervalHours === hours ? theme.accent : theme.bg,
+                    borderColor: theme.border,
+                    opacity: settings.hydrationEnabled ? 1 : 0.5,
+                  },
                 ]}
+                onPress={() => onUpdateSetting('hydrationIntervalHours', hours)}
+                disabled={!settings.hydrationEnabled}
+              >
+                <Text
+                  style={[
+                    styles.pillText,
+                    { color: settings.hydrationIntervalHours === hours ? '#111' : theme.text },
+                  ]}
               >
                 {hours}h
               </Text>
@@ -983,6 +1264,15 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [noteText, setNoteText] = useState('');
   const [noteCalories, setNoteCalories] = useState('');
+  const [ifEatText, setIfEatText] = useState('');
+  const [ifEatResult, setIfEatResult] = useState<FoodEstimateResult | null>(null);
+  const [ifEatBusy, setIfEatBusy] = useState(false);
+  const [portionText, setPortionText] = useState('');
+  const [portionTarget, setPortionTarget] = useState('');
+  const [portionResult, setPortionResult] = useState<PortionCoachResult | null>(null);
+  const [portionBusy, setPortionBusy] = useState(false);
+  const [goalTuningResult, setGoalTuningResult] = useState<GoalTuningResult | null>(null);
+  const [goalTuningBusy, setGoalTuningBusy] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanStatus, setScanStatus] = useState('');
   const [scanItems, setScanItems] = useState<ScanItem[] | null>(null);
@@ -1000,33 +1290,48 @@ export default function App() {
   const [showEndPicker, setShowEndPicker] = useState(false);
 
   const theme: Theme = useMemo(() => {
-    const applied =
-      settings.themePreference === 'system'
-        ? systemScheme ?? 'light'
-        : settings.themePreference;
-    return applied === 'dark'
-      ? {
-          mode: 'dark',
-          bg: '#121514',
-          bgAlt: '#0B0E0E',
-          card: '#1B201F',
-          text: '#F2F1ED',
-          muted: '#A8A39B',
-          accent: '#E1B35D',
-          border: '#2B3230',
-          shadow: '#000000',
-        }
-      : {
-          mode: 'light',
-          bg: '#F6F1EA',
-          bgAlt: '#EDE6DC',
-          card: '#FFFFFF',
-          text: '#1B1C1A',
-          muted: '#6A6760',
-          accent: '#2F6B5E',
-          border: '#E2D9CD',
-          shadow: '#4A4339',
-        };
+    const lightTheme: Theme = {
+      mode: 'light',
+      bg: '#F6F1EA',
+      bgAlt: '#EDE6DC',
+      card: '#FFFFFF',
+      text: '#1B1C1A',
+      muted: '#6A6760',
+      accent: '#2F6B5E',
+      border: '#E2D9CD',
+      shadow: '#4A4339',
+    };
+    const darkTheme: Theme = {
+      mode: 'dark',
+      bg: '#121514',
+      bgAlt: '#0B0E0E',
+      card: '#1B201F',
+      text: '#F2F1ED',
+      muted: '#A8A39B',
+      accent: '#E1B35D',
+      border: '#2B3230',
+      shadow: '#000000',
+    };
+    if (settings.themePreference === 'system') {
+      const systemApplied = systemScheme ?? 'light';
+      return systemApplied === 'dark'
+        ? {
+            ...darkTheme,
+            bg: '#141817',
+            bgAlt: '#0F1211',
+            card: '#1F2423',
+            accent: '#E7C07A',
+            border: '#323835',
+          }
+        : {
+            ...lightTheme,
+            bg: '#F3F2ED',
+            bgAlt: '#E7E2DA',
+            accent: '#2B7566',
+            border: '#DED7CD',
+          };
+    }
+    return settings.themePreference === 'dark' ? darkTheme : lightTheme;
   }, [settings.themePreference, systemScheme]);
 
   useEffect(() => {
@@ -1057,15 +1362,16 @@ export default function App() {
     if (ready) {
       scheduleReminders(activeSession);
     }
-  }, [
-    ready,
-    activeSession,
-    settings.remindersEnabled,
-    settings.hydrationEnabled,
-    settings.hydrationIntervalHours,
-    settings.protocolKey,
-    settings.customFastingHours,
-    settings.customEatingHours,
+    }, [
+      ready,
+      activeSession,
+      settings.remindersEnabled,
+      settings.hydrationEnabled,
+      settings.hydrationMode,
+      settings.hydrationIntervalHours,
+      settings.protocolKey,
+      settings.customFastingHours,
+      settings.customEatingHours,
     settings.dailyCalorieGoal,
     todayCalories,
     todayKey,
@@ -1109,6 +1415,9 @@ export default function App() {
           break;
         case 'hydrationEnabled':
           loaded.hydrationEnabled = row.value === 'true';
+          break;
+        case 'hydrationMode':
+          loaded.hydrationMode = row.value as HydrationMode;
           break;
         case 'hydrationIntervalHours':
           loaded.hydrationIntervalHours = Number(row.value);
@@ -1206,6 +1515,11 @@ export default function App() {
     const hasPermission = await ensureNotificationPermissions();
     if (!hasPermission) return;
 
+    const hydrationDuringFasting =
+      settings.hydrationMode === 'fasting' || settings.hydrationMode === 'both';
+    const hydrationDuringEating =
+      settings.hydrationMode === 'eating' || settings.hydrationMode === 'both';
+
     if (session) {
       const protocol = getProtocolDetails(settings);
       const plannedEnd =
@@ -1222,7 +1536,7 @@ export default function App() {
         });
       }
 
-      if (settings.hydrationEnabled && plannedEnd > Date.now()) {
+      if (settings.hydrationEnabled && hydrationDuringFasting && plannedEnd > Date.now()) {
         const intervalMs = settings.hydrationIntervalHours * 3600 * 1000;
         let next = Date.now() + intervalMs;
         while (next < plannedEnd) {
@@ -1237,24 +1551,39 @@ export default function App() {
         }
       }
     } else {
-      if (lastCompleted?.end_time) {
-        const protocol = getProtocolDetails(settings);
-        const nextFastStart =
-          lastCompleted.end_time + protocol.eatingHours * 3600 * 1000;
-        if (nextFastStart > Date.now()) {
+      const protocol = getProtocolDetails(settings);
+      const nextFastStart = lastCompleted?.end_time
+        ? lastCompleted.end_time + protocol.eatingHours * 3600 * 1000
+        : null;
+
+      if (nextFastStart && nextFastStart > Date.now()) {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: 'Start your fast',
+            body: 'Your eating window is ending. Time to begin your next fast.',
+          },
+          trigger: { type: 'date', date: new Date(nextFastStart) },
+        });
+      }
+
+      if (settings.hydrationEnabled && hydrationDuringEating && nextFastStart && nextFastStart > Date.now()) {
+        const intervalMs = settings.hydrationIntervalHours * 3600 * 1000;
+        let next = Date.now() + intervalMs;
+        while (next < nextFastStart) {
           await Notifications.scheduleNotificationAsync({
             content: {
-              title: 'Start your fast',
-              body: 'Your eating window is ending. Time to begin your next fast.',
+              title: 'Hydration check',
+              body: 'Take a moment to drink water.',
             },
-            trigger: { type: 'date', date: new Date(nextFastStart) },
+            trigger: { type: 'date', date: new Date(next) },
           });
+          next += intervalMs;
         }
       }
 
       if (settings.dailyCalorieGoal > 0) {
-      const threshold = Math.round(settings.dailyCalorieGoal * 0.9);
-      const shouldRemind =
+        const threshold = Math.round(settings.dailyCalorieGoal * 0.9);
+        const shouldRemind =
         todayCalories >= threshold &&
         todayCalories < settings.dailyCalorieGoal &&
         lastCalorieReminderDateRef.current !== todayKey;
@@ -1318,6 +1647,10 @@ export default function App() {
   };
 
   const addNote = async () => {
+    if (activeSession) {
+      Alert.alert('Fasting in progress', 'Notes can be added during eating windows.');
+      return;
+    }
     if (!noteText.trim()) return;
     const calories = noteCalories.trim().length > 0 ? Number(noteCalories) : null;
     await run(
@@ -1361,6 +1694,10 @@ export default function App() {
   };
 
   const addPhotoNote = async () => {
+    if (activeSession) {
+      Alert.alert('Fasting in progress', 'Photo notes can be added during eating windows.');
+      return;
+    }
     if (!FOOD_API_URL) {
       Alert.alert('Photo scan', 'Set EXPO_PUBLIC_FOOD_API_URL to use photo scans.');
       return;
@@ -1426,6 +1763,125 @@ export default function App() {
       Alert.alert('Photo scan failed', String(error));
     } finally {
       setScanBusy(false);
+    }
+  };
+
+  const estimateFood = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Food estimate', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    if (!ifEatText.trim()) return;
+    setIfEatResult(null);
+    setIfEatBusy(true);
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/food/estimate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify({ text: ifEatText.trim() }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Estimate failed.');
+      }
+      const data = (await response.json()) as FoodEstimateResult;
+      setIfEatResult(data);
+    } catch (error) {
+      Alert.alert('Estimate failed', String(error));
+    } finally {
+      setIfEatBusy(false);
+    }
+  };
+
+  const clearFoodEstimate = () => {
+    setIfEatResult(null);
+  };
+
+  const requestPortionCoach = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Portion coach', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    if (!portionText.trim()) return;
+    setPortionResult(null);
+    const targetInput = portionTarget.trim();
+    const targetCalories = targetInput.length > 0 ? Number(targetInput) : null;
+    const suggestedTarget =
+      targetCalories !== null && Number.isFinite(targetCalories)
+        ? targetCalories
+        : dailyCalorieGoal > 0
+          ? Math.max(0, dailyCalorieGoal - todayCalories)
+          : null;
+
+    setPortionBusy(true);
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/portion/coach`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          text: portionText.trim(),
+          targetCalories: suggestedTarget,
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Portion coach failed.');
+      }
+      const data = (await response.json()) as PortionCoachResult;
+      setPortionResult(data);
+    } catch (error) {
+      Alert.alert('Portion coach failed', String(error));
+    } finally {
+      setPortionBusy(false);
+    }
+  };
+
+  const clearPortionCoach = () => {
+    setPortionResult(null);
+  };
+
+  const requestGoalTuning = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Goal tuning', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    if (sessions.length < 3) {
+      Alert.alert('Goal tuning', 'Log a few fasts first to generate a recommendation.');
+      return;
+    }
+    setGoalTuningResult(null);
+    setGoalTuningBusy(true);
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/goal/tuning`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          currentProtocol: protocol.key === 'custom' ? '16:8' : protocol.key,
+          adherencePct,
+          avgFastingHours: Number((avgWeekMs / 3600000).toFixed(1)),
+          longestWeekHours: Number((longestWeekMs / 3600000).toFixed(1)),
+          sessionsCount: sessions.length,
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Goal tuning failed.');
+      }
+      const data = (await response.json()) as GoalTuningResult;
+      setGoalTuningResult(data);
+    } catch (error) {
+      Alert.alert('Goal tuning failed', String(error));
+    } finally {
+      setGoalTuningBusy(false);
     }
   };
 
@@ -1593,20 +2049,29 @@ export default function App() {
       if (currentWindowStart === windowStart && currentWindowEnd === windowEnd) {
         return null;
       }
-      const windowNotes = notes.filter(
-        (note) => note.timestamp >= windowStart && note.timestamp <= windowEnd
-      );
-      return {
-        start: windowStart,
-        end: windowEnd,
-        totalCalories: windowNotes.reduce(
-          (sum, note) => sum + (note.calories ?? 0),
-          0
-        ),
-        noteCount: windowNotes.length,
-      };
-    })
-    .filter((window): window is { start: number; end: number; totalCalories: number; noteCount: number } => !!window)
+        const windowNotes = notes
+          .filter((note) => note.timestamp >= windowStart && note.timestamp <= windowEnd)
+          .sort((a, b) => a.timestamp - b.timestamp);
+        return {
+          start: windowStart,
+          end: windowEnd,
+          totalCalories: windowNotes.reduce(
+            (sum, note) => sum + (note.calories ?? 0),
+            0
+          ),
+          noteCount: windowNotes.length,
+          notes: windowNotes,
+        };
+      })
+      .filter(
+        (window): window is {
+          start: number;
+          end: number;
+          totalCalories: number;
+          noteCount: number;
+          notes: EatingNote[];
+        } => !!window
+      )
     .slice(-6)
     .reverse();
 
@@ -1641,16 +2106,35 @@ export default function App() {
     await persistSetting(key, value);
   };
 
+  const applyGoalTuning = () => {
+    if (!goalTuningResult) return;
+    const allowed = PROTOCOLS.map((item) => item.key);
+    const recommended = goalTuningResult.recommendedProtocol;
+    if (!allowed.includes(recommended)) {
+      Alert.alert('Goal tuning', 'Recommended protocol is not supported.');
+      return;
+    }
+    updateSetting('protocolKey', recommended);
+    setGoalTuningResult(null);
+  };
+
   const nextFastStartMs =
     lastCompleted?.end_time && !activeSession
       ? lastCompleted.end_time + protocol.eatingHours * 3600 * 1000
       : null;
   const nextFastStartLabel = nextFastStartMs ? formatTime(nextFastStartMs) : null;
 
-  const nextHydrationMs =
-    activeSession && settings.hydrationEnabled
-      ? now + settings.hydrationIntervalHours * 3600 * 1000
-      : null;
+  const hydrationDuringFasting =
+    settings.hydrationMode === 'fasting' || settings.hydrationMode === 'both';
+  const hydrationDuringEating =
+    settings.hydrationMode === 'eating' || settings.hydrationMode === 'both';
+  const hydrationActive =
+    settings.hydrationEnabled &&
+    ((activeSession && hydrationDuringFasting) ||
+      (!activeSession && hydrationDuringEating && currentWindowStart !== null));
+  const nextHydrationMs = hydrationActive
+    ? now + settings.hydrationIntervalHours * 3600 * 1000
+    : null;
   const nextHydrationLabel = nextHydrationMs ? formatTime(nextHydrationMs) : 'None';
 
   const nextReminderLabel = activeSession
@@ -1664,6 +2148,7 @@ export default function App() {
     now,
     protocolLabel: protocol.label,
     activeSession,
+    isFasting: Boolean(activeSession),
     activeDuration,
     expectedEnd,
     avgWeekMs,
@@ -1696,6 +2181,24 @@ export default function App() {
     noteCalories,
     setNoteText,
     setNoteCalories,
+    ifEatText,
+    setIfEatText,
+    ifEatResult,
+    ifEatBusy,
+    onEstimateFood: estimateFood,
+    onClearFoodEstimate: clearFoodEstimate,
+    portionText,
+    setPortionText,
+    portionTarget,
+    setPortionTarget,
+    portionResult,
+    portionBusy,
+    onPortionCoach: requestPortionCoach,
+    onClearPortionCoach: clearPortionCoach,
+    goalTuningResult,
+    goalTuningBusy,
+    onRequestGoalTuning: requestGoalTuning,
+    onApplyGoalTuning: applyGoalTuning,
     onUpdateSetting: updateSetting,
     notificationStatus,
     onRequestNotificationPermissions: requestNotificationPermissions,
@@ -2060,23 +2563,30 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontFamily: 'Manrope_500Medium',
   },
+  metaStrong: {
+    fontFamily: 'Manrope_700Bold',
+  },
   row: {
     flexDirection: 'row',
     gap: 12,
     marginTop: 12,
+    alignItems: 'center',
+  },
+  buttonSpacing: {
+    marginTop: 12,
   },
   primaryButton: {
-    paddingVertical: 12,
+    paddingVertical: 0,
     paddingHorizontal: 18,
+    height: 44,
     borderRadius: 12,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
     shadowOpacity: 0.15,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: 4,
-    marginTop: 10,
-    minHeight: 44,
-    justifyContent: 'center',
   },
   primaryButtonText: {
     color: '#111',
@@ -2084,8 +2594,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   secondaryButton: {
-    paddingVertical: 12,
+    paddingVertical: 0,
     paddingHorizontal: 18,
+    height: 44,
     borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
@@ -2221,6 +2732,28 @@ const styles = StyleSheet.create({
     marginTop: 10,
     flexWrap: 'wrap',
   },
+  smartBlock: {
+    marginTop: 12,
+  },
+  smartDivider: {
+    height: 1,
+    marginVertical: 12,
+    opacity: 0.6,
+  },
+  smartResult: {
+    marginTop: 10,
+    gap: 4,
+  },
+  goalResult: {
+    marginTop: 10,
+    gap: 6,
+  },
+  timingBlock: {
+    marginTop: 10,
+  },
+  disabledRow: {
+    opacity: 0.5,
+  },
   input: {
     flex: 1,
     borderWidth: 1,
@@ -2275,17 +2808,38 @@ const styles = StyleSheet.create({
   historyRow: {
     paddingVertical: 8,
   },
+  historyNotes: {
+    marginTop: 6,
+    gap: 4,
+    paddingLeft: 8,
+  },
+  historyNoteText: {
+    fontSize: 12,
+    fontFamily: 'Manrope_500Medium',
+  },
   pillRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
     marginTop: 8,
   },
+  pillRowSingle: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    gap: 8,
+    marginTop: 8,
+    justifyContent: 'space-between',
+  },
   pill: {
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 6,
     paddingHorizontal: 12,
+  },
+  pillCompact: {
+    paddingHorizontal: 8,
+    flex: 1,
+    alignItems: 'center',
   },
   pillText: {
     fontSize: 12,
