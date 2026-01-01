@@ -38,6 +38,17 @@ const extractJson = (text) => {
   }
 };
 
+const extractCount = (text) => {
+  if (!text) return null;
+  const normalized = String(text).toLowerCase();
+  const match =
+    normalized.match(/(?:x\s*)?(\d+)\s*(?:x|pcs?|pieces?|cookies?|slices?|bars?|sticks?|eggs?|cups?|servings?)/i) ||
+    normalized.match(/(\d+)\s*x/i);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isFinite(count) && count > 0 ? count : null;
+};
+
 const getOpenAIKey = () => {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) {
@@ -98,7 +109,7 @@ const estimateCaloriesFallback = async (items) => {
       {
         role: 'system',
         content:
-          'You estimate calories for foods. Return only JSON with array items: [{"index": number, "calories": number|null}]. Use grams if provided, otherwise portion text.',
+          'You estimate calories for foods. Return only JSON with array items: [{"index": number, "calories": number|null}]. Use grams or count if provided, otherwise portion text.',
       },
       {
         role: 'user',
@@ -122,11 +133,14 @@ const estimateCaloriesFallback = async (items) => {
 
 const enrichItemsWithCalories = async (items) => {
   const enriched = [];
+  const fallbackCandidates = [];
+  const needsFallback = new Set();
   for (const item of items) {
     const name = item.name || 'Unknown item';
     const grams = Number(item.grams) || null;
     let calories = null;
     let usdaName = null;
+    const count = extractCount(`${item.portion ?? ''} ${item.name ?? ''}`);
     let usda = null;
     try {
       usda = await fetchUSDA(name);
@@ -145,26 +159,24 @@ const enrichItemsWithCalories = async (items) => {
       calories,
       sourceName: usdaName,
     });
+
+    if (calories === null || (count && count > 1)) {
+      needsFallback.add(enriched.length - 1);
+      fallbackCandidates.push({
+        index: enriched.length - 1,
+        name,
+        portion: item.portion || null,
+        grams,
+        count,
+      });
+    }
   }
 
-  const missing = enriched
-    .map((item, index) =>
-      item.calories === null
-        ? {
-            index,
-            name: item.name,
-            portion: item.portion,
-            grams: item.grams,
-          }
-        : null
-    )
-    .filter(Boolean);
-
-  if (missing.length > 0) {
+  if (fallbackCandidates.length > 0) {
     try {
-      const fallback = await estimateCaloriesFallback(missing);
+      const fallback = await estimateCaloriesFallback(fallbackCandidates);
       enriched.forEach((item, index) => {
-        if (item.calories === null && Number.isFinite(fallback[index])) {
+        if (needsFallback.has(index) && Number.isFinite(fallback[index])) {
           item.calories = fallback[index];
         }
       });
@@ -309,6 +321,79 @@ app.post('/v1/food/recalculate', requireApiKey, async (req, res) => {
       items: enriched,
       totalCalories,
       disclaimer: 'Estimates only. Please review portions before saving.',
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Server error', detail: String(error) });
+  }
+});
+
+app.post('/v1/fridge/ideas', requireApiKey, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Missing image' });
+    }
+    const limitRaw = req.body?.calorieLimit;
+    const limit = Number(limitRaw);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return res.status(400).json({ error: 'Missing calorieLimit' });
+    }
+
+    const sourceBuffer = req.file.buffer;
+    const analysisBuffer = await sharp(sourceBuffer)
+      .resize({ width: 1024, withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+
+    const imageBase64 = analysisBuffer.toString('base64');
+
+    let content;
+    try {
+      content = await callOpenAI({
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a meal planner. Identify visible ingredients in the fridge and propose 3-5 meal ideas that use them. Each meal must be at or under the calorie limit. Return only JSON: {"items": string[], "meals": [{"title": string, "calories": number, "ingredients": string[], "notes": string}]}.',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: `Calorie limit: ${limit}. Provide meal ideas.` },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageBase64}`,
+                },
+              },
+            ],
+          },
+        ],
+      });
+    } catch (error) {
+      return res.status(502).json({ error: 'OpenAI error', detail: String(error) });
+    }
+
+    const parsed = extractJson(content) || { items: [], meals: [] };
+    const items = Array.isArray(parsed.items) ? parsed.items.filter((item) => typeof item === 'string') : [];
+    const meals = Array.isArray(parsed.meals)
+      ? parsed.meals
+          .map((meal) => ({
+            title: String(meal.title ?? 'Meal idea'),
+            calories: Number(meal.calories) || 0,
+            ingredients: Array.isArray(meal.ingredients)
+              ? meal.ingredients.map((ing) => String(ing))
+              : [],
+            notes: meal.notes ? String(meal.notes) : undefined,
+          }))
+          .filter((meal) => Number.isFinite(meal.calories) && meal.calories > 0 && meal.calories <= limit)
+      : [];
+
+    return res.json({
+      items,
+      meals,
+      calorieLimit: limit,
+      disclaimer: 'Estimates only. Please verify ingredients and portions.',
     });
   } catch (error) {
     return res.status(500).json({ error: 'Server error', detail: String(error) });

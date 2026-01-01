@@ -95,6 +95,20 @@ type GoalTuningResult = {
   note?: string;
 };
 
+type FridgeMealIdea = {
+  title: string;
+  calories: number;
+  ingredients: string[];
+  notes?: string;
+};
+
+type FridgeIdeasResult = {
+  items: string[];
+  meals: FridgeMealIdea[];
+  calorieLimit: number;
+  disclaimer?: string;
+};
+
 type SettingsState = {
   protocolKey: string;
   customFastingHours: number;
@@ -186,6 +200,12 @@ type Theme = {
   portionBusy: boolean;
   onPortionCoach: () => void;
   onClearPortionCoach: () => void;
+  fridgeLimit: string;
+  setFridgeLimit: (value: string) => void;
+  fridgeIdeas: FridgeIdeasResult | null;
+  fridgeBusy: boolean;
+  onScanFridge: () => void;
+  onClearFridgeIdeas: () => void;
   goalTuningResult: GoalTuningResult | null;
   goalTuningBusy: boolean;
   onRequestGoalTuning: () => void;
@@ -833,6 +853,12 @@ const SmartToolsScreen = ({
   portionBusy,
   onPortionCoach,
   onClearPortionCoach,
+  fridgeLimit,
+  setFridgeLimit,
+  fridgeIdeas,
+  fridgeBusy,
+  onScanFridge,
+  onClearFridgeIdeas,
 }: ScreenProps) => {
   const suggestedTarget =
     dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
@@ -936,26 +962,88 @@ const SmartToolsScreen = ({
               </Pressable>
             ) : null}
           </View>
-          {portionResult ? (
-            <View style={styles.smartResult}>
-              <Text style={[styles.metaStrong, { color: theme.text }]}>
-                Estimated: {portionResult.estimatedCalories} kcal
-                {portionResult.targetCalories !== null && portionResult.targetCalories > 0
-                  ? ` (Target ${portionResult.targetCalories})`
-                  : ''}
+        {portionResult ? (
+          <View style={styles.smartResult}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>
+              Estimated: {portionResult.estimatedCalories} kcal
+              {portionResult.targetCalories !== null && portionResult.targetCalories > 0
+                ? ` (Target ${portionResult.targetCalories})`
+                : ''}
+            </Text>
+            <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
+            {portionResult.adjustments.map((tip, index) => (
+              <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                - {tip}
               </Text>
-              <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
-              {portionResult.adjustments.map((tip, index) => (
-                <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                  - {tip}
-                </Text>
-              ))}
-            </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Fridge ideas</Text>
+        <Text style={[styles.meta, { color: theme.muted }]}>
+          Snap your fridge and get meal ideas under a calorie limit.
+        </Text>
+        <TextInput
+          style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+          placeholder={suggestedTarget ? `Limit kcal (e.g., ${suggestedTarget})` : 'Limit kcal'}
+          placeholderTextColor={theme.muted}
+          value={fridgeLimit}
+          onChangeText={setFridgeLimit}
+          keyboardType="numeric"
+        />
+        <View style={styles.row}>
+          <Pressable
+            style={[
+              styles.primaryButton,
+              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: fridgeBusy ? 0.7 : 1 },
+            ]}
+            onPress={onScanFridge}
+            disabled={fridgeBusy}
+          >
+            <Text style={styles.primaryButtonText}>
+              {fridgeBusy ? 'Scanning...' : 'Scan fridge'}
+            </Text>
+          </Pressable>
+          {fridgeIdeas ? (
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onClearFridgeIdeas}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+            </Pressable>
           ) : null}
         </View>
-      </ScrollView>
-    </ScreenShell>
-  );
+        {fridgeIdeas ? (
+          <View style={styles.smartResult}>
+            {fridgeIdeas.items?.length ? (
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Detected: {fridgeIdeas.items.join(', ')}
+              </Text>
+            ) : null}
+            {fridgeIdeas.meals.map((meal, index) => (
+              <View key={`${meal.title}-${index}`} style={styles.smartMeal}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  {meal.title} · {meal.calories} kcal
+                </Text>
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  {meal.ingredients.join(', ')}
+                </Text>
+                {meal.notes ? (
+                  <Text style={[styles.meta, { color: theme.muted }]}>{meal.notes}</Text>
+                ) : null}
+              </View>
+            ))}
+            {fridgeIdeas.disclaimer ? (
+              <Text style={[styles.meta, { color: theme.muted }]}>{fridgeIdeas.disclaimer}</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    </ScrollView>
+  </ScreenShell>
+);
 };
 
 const HistoryScreen = ({
@@ -1286,6 +1374,9 @@ export default function App() {
   const [portionTarget, setPortionTarget] = useState('');
   const [portionResult, setPortionResult] = useState<PortionCoachResult | null>(null);
   const [portionBusy, setPortionBusy] = useState(false);
+  const [fridgeLimit, setFridgeLimit] = useState('');
+  const [fridgeIdeas, setFridgeIdeas] = useState<FridgeIdeasResult | null>(null);
+  const [fridgeBusy, setFridgeBusy] = useState(false);
   const [goalTuningResult, setGoalTuningResult] = useState<GoalTuningResult | null>(null);
   const [goalTuningBusy, setGoalTuningBusy] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
@@ -1868,6 +1959,68 @@ export default function App() {
     setPortionResult(null);
   };
 
+  const scanFridgeIdeas = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Fridge ideas', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    const parsedLimit = Number(fridgeLimit);
+    const suggestedLimit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? parsedLimit
+        : dailyCalorieGoal > 0
+          ? Math.max(0, dailyCalorieGoal - todayCalories)
+          : null;
+    if (!suggestedLimit || suggestedLimit <= 0) {
+      Alert.alert('Fridge ideas', 'Enter a calorie limit to generate ideas.');
+      return;
+    }
+
+    setFridgeIdeas(null);
+    setFridgeBusy(true);
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Camera', 'Camera permission is required.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.7,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+      const asset = result.assets[0];
+
+      const formData = new FormData();
+      formData.append('image', {
+        uri: asset.uri,
+        name: 'fridge.jpg',
+        type: 'image/jpeg',
+      } as unknown as Blob);
+      formData.append('calorieLimit', String(suggestedLimit));
+
+      const response = await fetch(`${FOOD_API_URL}/v1/fridge/ideas`, {
+        method: 'POST',
+        headers: FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : undefined,
+        body: formData,
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Fridge scan failed.');
+      }
+      const data = (await response.json()) as FridgeIdeasResult;
+      setFridgeIdeas(data);
+    } catch (error) {
+      Alert.alert('Fridge scan failed', String(error));
+    } finally {
+      setFridgeBusy(false);
+    }
+  };
+
+  const clearFridgeIdeas = () => {
+    setFridgeIdeas(null);
+  };
+
   const requestGoalTuning = async () => {
     if (!FOOD_API_URL) {
       Alert.alert('Goal tuning', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
@@ -2247,6 +2400,12 @@ export default function App() {
     portionBusy,
     onPortionCoach: requestPortionCoach,
     onClearPortionCoach: clearPortionCoach,
+    fridgeLimit,
+    setFridgeLimit,
+    fridgeIdeas,
+    fridgeBusy,
+    onScanFridge: scanFridgeIdeas,
+    onClearFridgeIdeas: clearFridgeIdeas,
     goalTuningResult,
     goalTuningBusy,
     onRequestGoalTuning: requestGoalTuning,
@@ -2440,39 +2599,51 @@ export default function App() {
               <Image source={{ uri: scanThumbPath }} style={styles.scanThumb} />
             ) : null}
             <ScrollView style={styles.scanList}>
-              {scanItems?.map((item, index) => (
-                <View key={`${item.name}-${index}`} style={styles.scanRow}>
-                  <View style={styles.scanText}>
+                {scanItems?.map((item, index) => {
+                  const isUnrecognized =
+                    item.calories === null ||
+                    item.calories === undefined ||
+                    (item.calories === 0 && !item.sourceName);
+                  return (
+                  <View key={`scan-item-${index}`} style={styles.scanRow}>
+                    <View style={styles.scanText}>
+                      <TextInput
+                        style={[styles.scanInput, { color: theme.text, borderColor: theme.border }]}
+                        value={item.name}
+                        onChangeText={(value) => updateScanItemName(index, value)}
+                        placeholder="Food name"
+                        placeholderTextColor={theme.muted}
+                      />
+                      <TextInput
+                        style={[styles.scanInput, { color: theme.text, borderColor: theme.border }]}
+                        value={item.portion ?? ''}
+                        onChangeText={(value) => updateScanItemPortion(index, value)}
+                        placeholder="Portion (e.g., 150 g)"
+                        placeholderTextColor={theme.muted}
+                      />
+                    </View>
                     <TextInput
-                      style={[styles.scanInput, { color: theme.text, borderColor: theme.border }]}
-                      value={item.name}
-                      onChangeText={(value) => updateScanItemName(index, value)}
-                      placeholder="Food name"
+                      style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                      value={
+                        isUnrecognized
+                          ? ''
+                          : item.calories !== null && item.calories !== undefined
+                            ? String(item.calories)
+                            : ''
+                      }
+                      onChangeText={(value) => updateScanItemCalories(index, value)}
+                      keyboardType="numeric"
+                      placeholder="kcal"
                       placeholderTextColor={theme.muted}
                     />
-                    <TextInput
-                      style={[styles.scanInput, { color: theme.text, borderColor: theme.border }]}
-                      value={item.portion ?? ''}
-                      onChangeText={(value) => updateScanItemPortion(index, value)}
-                      placeholder="Portion (e.g., 150 g)"
-                      placeholderTextColor={theme.muted}
-                    />
+                    {isUnrecognized ? (
+                      <Text style={[styles.warningText, { color: theme.muted }]}>
+                        Not recognized. Update the name and tap Refresh calories, or enter kcal.
+                      </Text>
+                    ) : null}
                   </View>
-                  <TextInput
-                    style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-                    value={item.calories !== null && item.calories !== undefined ? String(item.calories) : ''}
-                    onChangeText={(value) => updateScanItemCalories(index, value)}
-                    keyboardType="numeric"
-                    placeholder="kcal"
-                    placeholderTextColor={theme.muted}
-                  />
-                  {item.calories === null || item.calories === undefined ? (
-                    <Text style={[styles.warningText, { color: theme.muted }]}>
-                      Not recognized - add calories
-                    </Text>
-                  ) : null}
-                </View>
-              ))}
+                  );
+                })}
               </ScrollView>
               <Text style={[styles.meta, { color: theme.muted }]}>
                 Edit names to correct items, then refresh calories.
@@ -2523,13 +2694,13 @@ export default function App() {
             <Text style={[styles.sectionTitle, { color: theme.text }]}>
               Edit note
             </Text>
-            <TextInput
-              style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-              value={editNoteText}
-              onChangeText={setEditNoteText}
-              placeholder="Note"
-              placeholderTextColor={theme.muted}
-            />
+              <TextInput
+                style={[styles.input, styles.inputTall, { color: theme.text, borderColor: theme.border }]}
+                value={editNoteText}
+                onChangeText={setEditNoteText}
+                placeholder="Note"
+                placeholderTextColor={theme.muted}
+              />
             <TextInput
               style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
               value={editNoteCalories}
@@ -2816,6 +2987,10 @@ const styles = StyleSheet.create({
     marginTop: 10,
     gap: 4,
   },
+  smartMeal: {
+    marginTop: 8,
+    gap: 2,
+  },
   goalResult: {
     marginTop: 10,
     gap: 6,
@@ -2834,6 +3009,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     minWidth: 140,
     fontFamily: 'Manrope_500Medium',
+  },
+  inputTall: {
+    minHeight: 48,
+    paddingVertical: 12,
   },
   calorieInput: {
     borderWidth: 1,
