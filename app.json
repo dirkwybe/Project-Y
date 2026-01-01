@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.dirkwybe.fastlane",
-      "buildNumber": "2",
+      "buildNumber": "4",
       "infoPlist": {
         "NSUserNotificationUsageDescription": "FastLane uses notifications to remind you about fasting and hydration.",
         "ITSAppUsesNonExemptEncryption": false

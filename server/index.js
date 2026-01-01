@@ -40,13 +40,23 @@ const extractJson = (text) => {
 
 const extractCount = (text) => {
   if (!text) return null;
-  const normalized = String(text).toLowerCase();
+  const normalized = String(text).toLowerCase().trim();
+  if (!normalized) return null;
+
+  const hasMeasurementUnit = /(\\b\\d+\\s*(g|gram|grams|kg|ml|l|oz|lb|pounds?)\\b)/i.test(normalized);
+  if (hasMeasurementUnit) return null;
+
   const match =
-    normalized.match(/(?:x\s*)?(\d+)\s*(?:x|pcs?|pieces?|cookies?|slices?|bars?|sticks?|eggs?|cups?|servings?)/i) ||
-    normalized.match(/(\d+)\s*x/i);
+    normalized.match(
+      /(?:x\\s*)?(\\d+)\\s*(?:x|pcs?|pieces?|cookies?|slices?|bars?|sticks?|eggs?|cups?|servings?)\\b/i
+    ) ||
+    normalized.match(/\\b(\\d+)\\s*x\\b/i) ||
+    normalized.match(/\\bx\\s*(\\d+)\\b/i) ||
+    normalized.match(/^\\s*(\\d+)\\s*$/);
   if (!match) return null;
   const count = Number(match[1]);
-  return Number.isFinite(count) && count > 0 ? count : null;
+  if (!Number.isFinite(count) || count <= 0) return null;
+  return count <= 20 ? count : null;
 };
 
 const getOpenAIKey = () => {

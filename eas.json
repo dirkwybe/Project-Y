@@ -12,6 +12,10 @@
       "distribution": "internal"
     },
     "production": {
+      "env": {
+        "EXPO_PUBLIC_FOOD_API_URL": "https://project-y-production.up.railway.app",
+        "EXPO_PUBLIC_FOOD_API_KEY": "superSecretapikey2026!?!?"
+      },
       "ios": {
         "resourceClass": "m-medium"
       }
