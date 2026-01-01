@@ -71,6 +71,7 @@ type ScanItem = {
   confidence?: number | null;
   calories?: number | null;
   sourceName?: string | null;
+  count?: number | null;
 };
 
 type ThemePreference = 'system' | 'light' | 'dark';
@@ -2123,6 +2124,21 @@ export default function App() {
     setScanItems(next);
   };
 
+  const updateScanItemCount = (index: number, value: string) => {
+    if (!scanItems) return;
+    const next = [...scanItems];
+    const trimmed = value.trim();
+    const parsed = trimmed.length > 0 ? Number(trimmed) : null;
+    next[index] = {
+      ...next[index],
+      count:
+        parsed !== null && Number.isFinite(parsed) && parsed > 0
+          ? Math.round(parsed)
+          : null,
+    };
+    setScanItems(next);
+  };
+
   const saveScanResult = async () => {
     if (!scanItems) return;
     const summary = scanItems.length
@@ -2614,13 +2630,31 @@ export default function App() {
                         placeholder="Food name"
                         placeholderTextColor={theme.muted}
                       />
-                      <TextInput
-                        style={[styles.scanInput, { color: theme.text, borderColor: theme.border }]}
-                        value={item.portion ?? ''}
-                        onChangeText={(value) => updateScanItemPortion(index, value)}
-                        placeholder="Portion (e.g., 150 g)"
-                        placeholderTextColor={theme.muted}
-                      />
+                      <View style={styles.scanInlineRow}>
+                        <TextInput
+                          style={[
+                            styles.scanInput,
+                            styles.scanInputFlex,
+                            { color: theme.text, borderColor: theme.border },
+                          ]}
+                          value={item.portion ?? ''}
+                          onChangeText={(value) => updateScanItemPortion(index, value)}
+                          placeholder="Portion (e.g., 150 g)"
+                          placeholderTextColor={theme.muted}
+                        />
+                        <TextInput
+                          style={[
+                            styles.scanInput,
+                            styles.scanCountInput,
+                            { color: theme.text, borderColor: theme.border },
+                          ]}
+                          value={item.count !== null && item.count !== undefined ? String(item.count) : ''}
+                          onChangeText={(value) => updateScanItemCount(index, value)}
+                          placeholder="Count"
+                          placeholderTextColor={theme.muted}
+                          keyboardType="numeric"
+                        />
+                      </View>
                     </View>
                     <TextInput
                       style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
@@ -2646,7 +2680,7 @@ export default function App() {
                 })}
               </ScrollView>
               <Text style={[styles.meta, { color: theme.muted }]}>
-                Edit names to correct items, then refresh calories.
+                Edit names, portions, or counts, then refresh calories.
               </Text>
               <View style={styles.inlineRow}>
                 <Text style={[styles.meta, { color: theme.muted }]}>
@@ -2949,6 +2983,10 @@ const styles = StyleSheet.create({
   scanText: {
     flex: 1,
   },
+  scanInlineRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
   scanInput: {
     borderWidth: 1,
     borderRadius: 10,
@@ -2957,6 +2995,13 @@ const styles = StyleSheet.create({
     minHeight: 44,
     fontFamily: 'Manrope_500Medium',
     marginBottom: 6,
+  },
+  scanInputFlex: {
+    flex: 1,
+  },
+  scanCountInput: {
+    width: 72,
+    textAlign: 'center',
   },
   warningText: {
     fontSize: 11,

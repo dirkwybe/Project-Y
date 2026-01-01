@@ -59,6 +59,18 @@ const extractCount = (text) => {
   return count <= 20 ? count : null;
 };
 
+const parseGramsFromText = (text) => {
+  if (!text) return null;
+  const normalized = String(text).toLowerCase();
+  const match = normalized.match(/(\\d+(?:\\.\\d+)?)\\s*(kg|g)\\b/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const unit = match[2];
+  const grams = unit === 'kg' ? value * 1000 : value;
+  return Math.round(grams);
+};
+
 const getOpenAIKey = () => {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) {
@@ -147,11 +159,19 @@ const enrichItemsWithCalories = async (items) => {
   const needsFallback = new Set();
   for (const item of items) {
     const name = item.name || 'Unknown item';
-    const grams = Number(item.grams) || null;
     let calories = null;
     let usdaName = null;
     const portionText = item.portion ?? '';
-    const count = extractCount(portionText) ?? extractCount(`${portionText} ${item.name ?? ''}`);
+    const gramsRaw = Number(item.grams);
+    const grams =
+      Number.isFinite(gramsRaw) && gramsRaw > 0
+        ? gramsRaw
+        : parseGramsFromText(portionText);
+    const countRaw = Number(item.count);
+    const countText =
+      extractCount(portionText) ?? extractCount(`${portionText} ${item.name ?? ''}`);
+    const count =
+      Number.isFinite(countRaw) && countRaw > 0 ? Math.round(countRaw) : countText;
     let usda = null;
     try {
       usda = await fetchUSDA(name);
@@ -165,10 +185,11 @@ const enrichItemsWithCalories = async (items) => {
     enriched.push({
       name,
       portion: item.portion || null,
-      grams,
+      grams: grams ?? null,
       confidence: item.confidence ?? null,
       calories,
       sourceName: usdaName,
+      count,
     });
 
     if (calories === null || (count && count > 1)) {
@@ -325,6 +346,7 @@ app.post('/v1/food/recalculate', requireApiKey, async (req, res) => {
       portion: item?.portion ?? null,
       grams: Number(item?.grams) || null,
       confidence: item?.confidence ?? null,
+      count: item?.count ?? null,
     }));
 
     const { items: enriched, totalCalories } = await enrichItemsWithCalories(sanitized);
