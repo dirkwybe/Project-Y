@@ -299,12 +299,13 @@ app.post('/v1/portion/coach', requireApiKey, async (req, res) => {
     }
 
     const targetRaw = req.body?.targetCalories;
-    const targetNumber =
-      typeof targetRaw === 'number' && Number.isFinite(targetRaw)
-        ? targetRaw
-        : Number.isFinite(Number(targetRaw))
-          ? Number(targetRaw)
-          : null;
+    let targetNumber = null;
+    if (targetRaw !== null && targetRaw !== undefined && targetRaw !== '') {
+      const num = typeof targetRaw === 'number' ? targetRaw : Number(targetRaw);
+      if (Number.isFinite(num)) {
+        targetNumber = num;
+      }
+    }
 
     const items = await analyzeFoodsFromText(text);
     const { items: enriched, totalCalories } = await enrichItemsWithCalories(items);

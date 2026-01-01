@@ -884,7 +884,7 @@ const EatingScreen = ({
               <View style={styles.smartResult}>
                 <Text style={[styles.metaStrong, { color: theme.text }]}>
                   Estimated: {portionResult.estimatedCalories} kcal
-                  {portionResult.targetCalories !== null
+                  {portionResult.targetCalories !== null && portionResult.targetCalories > 0
                     ? ` (Target ${portionResult.targetCalories})`
                     : ''}
                 </Text>
@@ -1806,7 +1806,10 @@ export default function App() {
       Alert.alert('Portion coach', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
       return;
     }
-    if (!portionText.trim()) return;
+    if (!portionText.trim()) {
+      Alert.alert('Portion coach', 'Add a meal description to get tips.');
+      return;
+    }
     setPortionResult(null);
     const targetInput = portionTarget.trim();
     const targetCalories = targetInput.length > 0 ? Number(targetInput) : null;
@@ -1819,16 +1822,19 @@ export default function App() {
 
     setPortionBusy(true);
     try {
+      const payload: { text: string; targetCalories?: number } = {
+        text: portionText.trim(),
+      };
+      if (Number.isFinite(suggestedTarget) && suggestedTarget !== null && suggestedTarget > 0) {
+        payload.targetCalories = suggestedTarget;
+      }
       const response = await fetch(`${FOOD_API_URL}/v1/portion/coach`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
         },
-        body: JSON.stringify({
-          text: portionText.trim(),
-          targetCalories: suggestedTarget,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) {
         const detail = await response.text();
