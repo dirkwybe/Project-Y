@@ -2,7 +2,7 @@
   "expo": {
     "name": "Fasting Lane",
     "slug": "fasting-lane",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -10,18 +10,21 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F6F1EA"
     },
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
+      "bundleIdentifier": "com.dirkwybe.fastlane",
+      "buildNumber": "2",
       "infoPlist": {
-        "NSUserNotificationUsageDescription": "FastLane uses notifications to remind you about fasting and hydration."
+        "NSUserNotificationUsageDescription": "FastLane uses notifications to remind you about fasting and hydration.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#F6F1EA"
       },
       "permissions": [
         "RECEIVE_BOOT_COMPLETED",
@@ -35,6 +38,11 @@
     },
     "plugins": [
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7ef74567-885c-484f-81b7-aa79a6e96b68"
+      }
+    }
   }
 }
