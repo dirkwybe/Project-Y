@@ -410,9 +410,6 @@ const HomeScreen = ({
   onStopFast,
   onOpenEdit,
 }: ScreenProps) => {
-  const suggestedTarget =
-    dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
-
   return (
     <ScreenShell theme={theme}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -703,7 +700,11 @@ const EatingScreen = ({
   onDeleteNote,
   onOpenEditNote,
   isFasting,
-}: ScreenProps) => (
+}: ScreenProps) => {
+  const suggestedTarget =
+    dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
+
+  return (
   <ScreenShell theme={theme}>
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <HeaderBar
@@ -940,7 +941,7 @@ const EatingScreen = ({
       </View>
     </ScrollView>
   </ScreenShell>
-);
+  );
 };
 
 const HistoryScreen = ({

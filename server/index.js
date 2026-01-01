@@ -90,6 +90,36 @@ const analyzeFoodsFromText = async (text) => {
   return Array.isArray(parsed.items) ? parsed.items : [];
 };
 
+const estimateCaloriesFallback = async (items) => {
+  if (!items.length) return {};
+  const content = await callOpenAI({
+    temperature: 0.3,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You estimate calories for foods. Return only JSON with array items: [{"index": number, "calories": number|null}]. Use grams if provided, otherwise portion text.',
+      },
+      {
+        role: 'user',
+        content: `Estimate calories for: ${JSON.stringify(items)}`,
+      },
+    ],
+  });
+
+  const parsed = extractJson(content) || { items: [] };
+  const results = Array.isArray(parsed.items) ? parsed.items : [];
+  const mapped = {};
+  results.forEach((item) => {
+    const index = Number(item.index);
+    const calories = Number(item.calories);
+    if (Number.isFinite(index) && Number.isFinite(calories) && calories > 0) {
+      mapped[index] = Math.round(calories);
+    }
+  });
+  return mapped;
+};
+
 const enrichItemsWithCalories = async (items) => {
   const enriched = [];
   for (const item of items) {
@@ -97,7 +127,12 @@ const enrichItemsWithCalories = async (items) => {
     const grams = Number(item.grams) || null;
     let calories = null;
     let usdaName = null;
-    const usda = await fetchUSDA(name);
+    let usda = null;
+    try {
+      usda = await fetchUSDA(name);
+    } catch (error) {
+      usda = null;
+    }
     if (usda && usda.kcalPer100g) {
       usdaName = usda.name;
       calories = grams ? Math.round((usda.kcalPer100g * grams) / 100) : Math.round(usda.kcalPer100g);
@@ -110,6 +145,32 @@ const enrichItemsWithCalories = async (items) => {
       calories,
       sourceName: usdaName,
     });
+  }
+
+  const missing = enriched
+    .map((item, index) =>
+      item.calories === null
+        ? {
+            index,
+            name: item.name,
+            portion: item.portion,
+            grams: item.grams,
+          }
+        : null
+    )
+    .filter(Boolean);
+
+  if (missing.length > 0) {
+    try {
+      const fallback = await estimateCaloriesFallback(missing);
+      enriched.forEach((item, index) => {
+        if (item.calories === null && Number.isFinite(fallback[index])) {
+          item.calories = fallback[index];
+        }
+      });
+    } catch (error) {
+      // ignore fallback errors
+    }
   }
 
   const totalCalories = enriched.reduce(
@@ -128,7 +189,7 @@ const fetchUSDA = async (query) => {
   )}&query=${encodeURIComponent(query)}&pageSize=1`;
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`USDA lookup failed (${response.status})`);
+    return null;
   }
   const data = await response.json();
   const food = data?.foods?.[0];
