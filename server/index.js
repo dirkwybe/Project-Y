@@ -291,6 +291,30 @@ app.post('/v1/food/estimate', requireApiKey, async (req, res) => {
   }
 });
 
+app.post('/v1/food/recalculate', requireApiKey, async (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : null;
+    if (!items) {
+      return res.status(400).json({ error: 'Missing items' });
+    }
+    const sanitized = items.map((item) => ({
+      name: String(item?.name ?? 'Unknown item'),
+      portion: item?.portion ?? null,
+      grams: Number(item?.grams) || null,
+      confidence: item?.confidence ?? null,
+    }));
+
+    const { items: enriched, totalCalories } = await enrichItemsWithCalories(sanitized);
+    return res.json({
+      items: enriched,
+      totalCalories,
+      disclaimer: 'Estimates only. Please review portions before saving.',
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Server error', detail: String(error) });
+  }
+});
+
 app.post('/v1/portion/coach', requireApiKey, async (req, res) => {
   try {
     const text = String(req.body?.text ?? '').trim();

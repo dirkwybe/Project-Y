@@ -111,6 +111,7 @@ type TabParamList = {
   Home: undefined;
   Insights: undefined;
   Eating: undefined;
+  Smart: undefined;
   History: undefined;
   Settings: undefined;
 };
@@ -679,20 +680,6 @@ const EatingScreen = ({
   noteCalories,
   setNoteText,
   setNoteCalories,
-  ifEatText,
-  setIfEatText,
-  ifEatResult,
-  ifEatBusy,
-  onEstimateFood,
-  onClearFoodEstimate,
-  portionText,
-  setPortionText,
-  portionTarget,
-  setPortionTarget,
-  portionResult,
-  portionBusy,
-  onPortionCoach,
-  onClearPortionCoach,
   onAddNote,
   onScanFoodPhoto,
   scanBusy,
@@ -701,9 +688,6 @@ const EatingScreen = ({
   onOpenEditNote,
   isFasting,
 }: ScreenProps) => {
-  const suggestedTarget =
-    dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
-
   return (
   <ScreenShell theme={theme}>
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -787,119 +771,6 @@ const EatingScreen = ({
         </View>
 
         <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Smart tools</Text>
-          <View style={styles.smartBlock}>
-            <Text style={[styles.metaStrong, { color: theme.text }]}>If I eat this</Text>
-            <TextInput
-              style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-              placeholder="Example: Turkey wrap and a latte"
-              placeholderTextColor={theme.muted}
-              value={ifEatText}
-              onChangeText={setIfEatText}
-            />
-            <View style={styles.row}>
-              <Pressable
-                style={[
-                  styles.primaryButton,
-                  { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
-                ]}
-                onPress={onEstimateFood}
-                disabled={ifEatBusy}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {ifEatBusy ? 'Estimating...' : 'Estimate'}
-                </Text>
-              </Pressable>
-              {ifEatResult ? (
-                <Pressable
-                  style={[styles.secondaryButton, { borderColor: theme.border }]}
-                  onPress={onClearFoodEstimate}
-                >
-                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-                </Pressable>
-              ) : null}
-            </View>
-            {ifEatResult ? (
-              <View style={styles.smartResult}>
-                <Text style={[styles.metaStrong, { color: theme.text }]}>
-                  Estimated total: {ifEatResult.totalCalories} kcal
-                </Text>
-                {ifEatResult.items.map((item, index) => (
-                  <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                    - {item.name}
-                    {item.calories !== null && item.calories !== undefined
-                      ? ` (${item.calories} kcal)`
-                      : ''}
-                  </Text>
-                ))}
-                {ifEatResult.disclaimer ? (
-                  <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-
-          <View style={[styles.smartDivider, { backgroundColor: theme.border }]} />
-
-          <View style={styles.smartBlock}>
-            <Text style={[styles.metaStrong, { color: theme.text }]}>Portion coach</Text>
-            <TextInput
-              style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-              placeholder="Example: Bowl of pasta with tomato sauce"
-              placeholderTextColor={theme.muted}
-              value={portionText}
-              onChangeText={setPortionText}
-            />
-            <TextInput
-              style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-              placeholder={suggestedTarget ? `Target kcal (e.g., ${suggestedTarget})` : 'Target kcal (optional)'}
-              placeholderTextColor={theme.muted}
-              value={portionTarget}
-              onChangeText={setPortionTarget}
-              keyboardType="numeric"
-            />
-            <View style={styles.row}>
-              <Pressable
-                style={[
-                  styles.primaryButton,
-                  { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: portionBusy ? 0.7 : 1 },
-                ]}
-                onPress={onPortionCoach}
-                disabled={portionBusy}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {portionBusy ? 'Coaching...' : 'Get tips'}
-                </Text>
-              </Pressable>
-              {portionResult ? (
-                <Pressable
-                  style={[styles.secondaryButton, { borderColor: theme.border }]}
-                  onPress={onClearPortionCoach}
-                >
-                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-                </Pressable>
-              ) : null}
-            </View>
-            {portionResult ? (
-              <View style={styles.smartResult}>
-                <Text style={[styles.metaStrong, { color: theme.text }]}>
-                  Estimated: {portionResult.estimatedCalories} kcal
-                  {portionResult.targetCalories !== null && portionResult.targetCalories > 0
-                    ? ` (Target ${portionResult.targetCalories})`
-                    : ''}
-                </Text>
-                <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
-                {portionResult.adjustments.map((tip, index) => (
-                  <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                    - {tip}
-                  </Text>
-                ))}
-              </View>
-            ) : null}
-          </View>
-        </View>
-
-        <View style={[styles.card, getCardStyle(theme)]}> 
           <Text style={[styles.sectionTitle, { color: theme.muted }]}>Window notes</Text>
         {currentWindowNotes.length === 0 ? (
           <Text style={[styles.meta, { color: theme.muted }]}>
@@ -941,6 +812,149 @@ const EatingScreen = ({
       </View>
     </ScrollView>
   </ScreenShell>
+  );
+};
+
+const SmartToolsScreen = ({
+  theme,
+  todayCalories,
+  dailyCalorieGoal,
+  ifEatText,
+  setIfEatText,
+  ifEatResult,
+  ifEatBusy,
+  onEstimateFood,
+  onClearFoodEstimate,
+  portionText,
+  setPortionText,
+  portionTarget,
+  setPortionTarget,
+  portionResult,
+  portionBusy,
+  onPortionCoach,
+  onClearPortionCoach,
+}: ScreenProps) => {
+  const suggestedTarget =
+    dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
+
+  return (
+    <ScreenShell theme={theme}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <HeaderBar
+          theme={theme}
+          title="Smart tools"
+          subtitle="AI-powered helpers"
+        />
+
+        <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
+          <TextInput
+            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+            placeholder="Example: Turkey wrap and a latte"
+            placeholderTextColor={theme.muted}
+            value={ifEatText}
+            onChangeText={setIfEatText}
+          />
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
+              ]}
+              onPress={onEstimateFood}
+              disabled={ifEatBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {ifEatBusy ? 'Estimating...' : 'Estimate'}
+              </Text>
+            </Pressable>
+            {ifEatResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearFoodEstimate}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {ifEatResult ? (
+            <View style={styles.smartResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Estimated total: {ifEatResult.totalCalories} kcal
+              </Text>
+              {ifEatResult.items.map((item, index) => (
+                <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                  - {item.name}
+                  {item.calories !== null && item.calories !== undefined
+                    ? ` (${item.calories} kcal)`
+                    : ''}
+                </Text>
+              ))}
+              {ifEatResult.disclaimer ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+
+        <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Portion coach</Text>
+          <TextInput
+            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+            placeholder="Example: Bowl of pasta with tomato sauce"
+            placeholderTextColor={theme.muted}
+            value={portionText}
+            onChangeText={setPortionText}
+          />
+          <TextInput
+            style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+            placeholder={suggestedTarget ? `Target kcal (e.g., ${suggestedTarget})` : 'Target kcal (optional)'}
+            placeholderTextColor={theme.muted}
+            value={portionTarget}
+            onChangeText={setPortionTarget}
+            keyboardType="numeric"
+          />
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: portionBusy ? 0.7 : 1 },
+              ]}
+              onPress={onPortionCoach}
+              disabled={portionBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {portionBusy ? 'Coaching...' : 'Get tips'}
+              </Text>
+            </Pressable>
+            {portionResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearPortionCoach}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {portionResult ? (
+            <View style={styles.smartResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Estimated: {portionResult.estimatedCalories} kcal
+                {portionResult.targetCalories !== null && portionResult.targetCalories > 0
+                  ? ` (Target ${portionResult.targetCalories})`
+                  : ''}
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
+              {portionResult.adjustments.map((tip, index) => (
+                <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                  - {tip}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </ScrollView>
+    </ScreenShell>
   );
 };
 
@@ -1280,6 +1294,7 @@ export default function App() {
   const [scanThumbPath, setScanThumbPath] = useState<string | null>(null);
   const [scanTotalCalories, setScanTotalCalories] = useState<number | null>(null);
   const [scanVisible, setScanVisible] = useState(false);
+  const [scanRecalcBusy, setScanRecalcBusy] = useState(false);
   const [editNote, setEditNote] = useState<EatingNote | null>(null);
   const [editNoteText, setEditNoteText] = useState('');
   const [editNoteCalories, setEditNoteCalories] = useState('');
@@ -1905,6 +1920,36 @@ export default function App() {
     setScanTotalCalories(total);
   };
 
+  const recalcScanCalories = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Photo scan', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    if (!scanItems || scanItems.length === 0) return;
+    setScanRecalcBusy(true);
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/food/recalculate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify({ items: scanItems }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Refresh failed.');
+      }
+      const data = (await response.json()) as FoodEstimateResult;
+      setScanItems(data.items ?? []);
+      setScanTotalCalories(data.totalCalories ?? 0);
+    } catch (error) {
+      Alert.alert('Refresh failed', String(error));
+    } finally {
+      setScanRecalcBusy(false);
+    }
+  };
+
   const updateScanItemName = (index: number, value: string) => {
     if (!scanItems) return;
     const next = [...scanItems];
@@ -2274,6 +2319,7 @@ export default function App() {
                 Home: 'timer-outline',
                 Insights: 'stats-chart-outline',
                 Eating: 'restaurant-outline',
+                Smart: 'sparkles-outline',
                 History: 'calendar-outline',
                 Settings: 'settings-outline',
               };
@@ -2282,10 +2328,11 @@ export default function App() {
           })}
         >
           <Tab.Screen name="Home">{() => <HomeScreen {...screenProps} />}</Tab.Screen>
+          <Tab.Screen name="Eating">{() => <EatingScreen {...screenProps} />}</Tab.Screen>
+          <Tab.Screen name="Smart">{() => <SmartToolsScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="Insights">
             {() => <InsightsScreen {...screenProps} />}
           </Tab.Screen>
-          <Tab.Screen name="Eating">{() => <EatingScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="History">{() => <HistoryScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="Settings">{() => <SettingsScreen {...screenProps} />}</Tab.Screen>
         </Tab.Navigator>
@@ -2426,10 +2473,27 @@ export default function App() {
                   ) : null}
                 </View>
               ))}
-            </ScrollView>
-            <Text style={[styles.meta, { color: theme.muted }]}>
-              Total: {scanTotalCalories ?? 0} kcal
-            </Text>
+              </ScrollView>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Edit names to correct items, then refresh calories.
+              </Text>
+              <View style={styles.inlineRow}>
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  Total: {scanTotalCalories ?? 0} kcal
+                </Text>
+                <Pressable
+                  style={[
+                    styles.ghostButton,
+                    { borderColor: theme.border, opacity: scanRecalcBusy ? 0.6 : 1 },
+                  ]}
+                  onPress={recalcScanCalories}
+                  disabled={scanRecalcBusy}
+                >
+                  <Text style={[styles.ghostButtonText, { color: theme.text }]}>
+                    {scanRecalcBusy ? 'Updating...' : 'Refresh calories'}
+                  </Text>
+                </Pressable>
+              </View>
             <View style={styles.row}>
               <Pressable
                 style={[
@@ -2718,7 +2782,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 10,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: 10,
+    minHeight: 44,
     fontFamily: 'Manrope_500Medium',
     marginBottom: 6,
   },
@@ -2789,6 +2854,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  ghostButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  ghostButtonText: {
+    fontSize: 12,
+    fontFamily: 'Manrope_600SemiBold',
   },
   noteContent: {
     flex: 1,
