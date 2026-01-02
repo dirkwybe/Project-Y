@@ -62,14 +62,26 @@ const extractCount = (text) => {
 const parseGramsFromText = (text) => {
   if (!text) return null;
   const normalized = String(text).toLowerCase();
-  const match = normalized.match(/(\\d+(?:\\.\\d+)?)\\s*(kg|g)\\b/);
+  const match = normalized.match(/(\\d+(?:\\.\\d+)?)\\s*(kg|g|oz|lb|lbs|pound|pounds)\\b/);
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value) || value <= 0) return null;
   const unit = match[2];
-  const grams = unit === 'kg' ? value * 1000 : value;
+  let grams = value;
+  if (unit === 'kg') grams = value * 1000;
+  if (unit === 'oz') grams = value * 28.3495;
+  if (unit === 'lb' || unit === 'lbs' || unit === 'pound' || unit === 'pounds') {
+    grams = value * 453.592;
+  }
   return Math.round(grams);
 };
+
+const normalizeUnitSystem = (value) => (value === 'imperial' ? 'imperial' : 'metric');
+
+const unitSystemHint = (unitSystem) =>
+  unitSystem === 'imperial'
+    ? 'Use imperial units (oz, lb, fl oz) for portion descriptions, but keep grams as a numeric gram estimate.'
+    : 'Use metric units (g, ml) for portion descriptions.';
 
 const getOpenAIKey = () => {
   const openaiKey = process.env.OPENAI_API_KEY;
@@ -103,14 +115,15 @@ const callOpenAI = async ({ messages, temperature = 0.2 }) => {
   return completion?.choices?.[0]?.message?.content ?? '';
 };
 
-const analyzeFoodsFromText = async (text) => {
+const analyzeFoodsFromText = async (text, unitSystem) => {
+  const unitHint = unitSystemHint(unitSystem);
   const content = await callOpenAI({
     temperature: 0.2,
     messages: [
       {
         role: 'system',
         content:
-          'You are a nutrition assistant. Identify foods and estimate portion size in grams. Return only JSON with an array named items. Each item: {"name": string, "portion": string, "grams": number, "confidence": number}.',
+          `You are a nutrition assistant. Identify foods and estimate portion size in grams. ${unitHint} Return only JSON with an array named items. Each item: {"name": string, "portion": string, "grams": number, "confidence": number}.`,
       },
       {
         role: 'user',
@@ -180,7 +193,12 @@ const enrichItemsWithCalories = async (items) => {
     }
     if (usda && usda.kcalPer100g) {
       usdaName = usda.name;
-      calories = grams ? Math.round((usda.kcalPer100g * grams) / 100) : Math.round(usda.kcalPer100g);
+      if (grams) {
+        const multiplier = count && count > 0 ? count : 1;
+        calories = Math.round(((usda.kcalPer100g * grams) / 100) * multiplier);
+      } else if (!count) {
+        calories = Math.round(usda.kcalPer100g);
+      }
     }
     enriched.push({
       name,
@@ -192,7 +210,7 @@ const enrichItemsWithCalories = async (items) => {
       count,
     });
 
-    if (calories === null || (count && count > 1)) {
+    if (calories === null || (count && count > 1 && !grams)) {
       needsFallback.add(enriched.length - 1);
       fallbackCandidates.push({
         index: enriched.length - 1,
@@ -257,6 +275,8 @@ app.post('/v1/food/analyze', requireApiKey, upload.single('image'), async (req, 
     if (!req.file) {
       return res.status(400).json({ error: 'Missing image' });
     }
+    const unitSystem = normalizeUnitSystem(req.body?.unitSystem);
+    const unitHint = unitSystemHint(unitSystem);
 
     const sourceBuffer = req.file.buffer;
     const analysisBuffer = await sharp(sourceBuffer)
@@ -279,7 +299,7 @@ app.post('/v1/food/analyze', requireApiKey, upload.single('image'), async (req, 
           {
             role: 'system',
             content:
-              'You are a nutrition assistant. Identify foods and estimate portion size in grams. Return only JSON with an array named items. Each item: {"name": string, "portion": string, "grams": number, "confidence": number}.',
+              `You are a nutrition assistant. Identify foods and estimate portion size in grams. ${unitHint} Return only JSON with an array named items. Each item: {"name": string, "portion": string, "grams": number, "confidence": number}.`,
           },
           {
             role: 'user',
@@ -321,8 +341,8 @@ app.post('/v1/food/estimate', requireApiKey, async (req, res) => {
     if (!text) {
       return res.status(400).json({ error: 'Missing text' });
     }
-
-    const items = await analyzeFoodsFromText(text);
+    const unitSystem = normalizeUnitSystem(req.body?.unitSystem);
+    const items = await analyzeFoodsFromText(text, unitSystem);
     const { items: enriched, totalCalories } = await enrichItemsWithCalories(items);
 
     return res.json({
@@ -366,10 +386,8 @@ app.post('/v1/fridge/ideas', requireApiKey, upload.single('image'), async (req, 
       return res.status(400).json({ error: 'Missing image' });
     }
     const limitRaw = req.body?.calorieLimit;
-    const limit = Number(limitRaw);
-    if (!Number.isFinite(limit) || limit <= 0) {
-      return res.status(400).json({ error: 'Missing calorieLimit' });
-    }
+    const parsedLimit = Number(limitRaw);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 400;
 
     const sourceBuffer = req.file.buffer;
     const analysisBuffer = await sharp(sourceBuffer)
@@ -433,12 +451,116 @@ app.post('/v1/fridge/ideas', requireApiKey, upload.single('image'), async (req, 
   }
 });
 
+app.post('/v1/autopilot', requireApiKey, async (req, res) => {
+  try {
+    const windowMinutes = Number(req.body?.windowMinutes ?? 0);
+    if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+      return res.status(400).json({ error: 'Missing windowMinutes' });
+    }
+    const remainingCaloriesRaw = Number(req.body?.remainingCalories);
+    const remainingCalories = Number.isFinite(remainingCaloriesRaw)
+      ? remainingCaloriesRaw
+      : null;
+    const unitSystem = normalizeUnitSystem(req.body?.unitSystem);
+    const unitHint = unitSystemHint(unitSystem);
+
+    const content = await callOpenAI({
+      temperature: 0.3,
+      messages: [
+        {
+          role: 'system',
+          content:
+            `You are a nutrition planner. Create a timed eating-window plan. ${unitHint} Return only JSON: {"items":[{"time":"HH:MM","title":string,"calories":number,"notes":string}],"totalCalories":number}. Keep 3-4 items and keep total calories near remaining calories if provided.`,
+        },
+        {
+          role: 'user',
+          content: `Window minutes: ${windowMinutes}. Remaining calories: ${
+            remainingCalories ?? 'not set'
+          }.`,
+        },
+      ],
+    });
+
+    const parsed = extractJson(content) || { items: [] };
+    const items = Array.isArray(parsed.items)
+      ? parsed.items
+          .map((item) => ({
+            time: String(item.time ?? ''),
+            title: String(item.title ?? 'Meal'),
+            calories: Number(item.calories) || 0,
+            notes: item.notes ? String(item.notes) : undefined,
+          }))
+          .filter((item) => item.time && Number.isFinite(item.calories) && item.calories > 0)
+      : [];
+
+    const totalCalories = items.reduce((sum, item) => sum + (item.calories ?? 0), 0);
+
+    return res.json({
+      items,
+      totalCalories,
+      disclaimer: 'Estimates only. Adjust to your appetite and schedule.',
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Server error', detail: String(error) });
+  }
+});
+
+app.post('/v1/craving/rescue', requireApiKey, async (req, res) => {
+  try {
+    const isFasting = Boolean(req.body?.isFasting);
+    const minutesLeft = Number(req.body?.minutesLeft);
+    const remainingCaloriesRaw = Number(req.body?.remainingCalories);
+    const remainingCalories = Number.isFinite(remainingCaloriesRaw)
+      ? remainingCaloriesRaw
+      : null;
+    const unitSystem = normalizeUnitSystem(req.body?.unitSystem);
+
+    const content = await callOpenAI({
+      temperature: 0.4,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a calm, supportive coach. Provide a quick tip and 3 short steps to handle cravings. If fasting, avoid food suggestions. If not fasting, include 2 snack ideas under the remaining calories if provided. Return only JSON: {"quickTip": string, "steps": string[], "snackIdeas": string[]}.',
+        },
+        {
+          role: 'user',
+          content: `Status: ${isFasting ? 'fasting' : 'eating'}. Minutes left: ${
+            Number.isFinite(minutesLeft) ? minutesLeft : 'n/a'
+          }. Remaining calories: ${remainingCalories ?? 'n/a'}. Unit system: ${unitSystem}.`,
+        },
+      ],
+    });
+
+    const parsed = extractJson(content) || {};
+    const quickTip =
+      typeof parsed.quickTip === 'string' && parsed.quickTip.trim()
+        ? parsed.quickTip.trim()
+        : 'Take three slow breaths and reset.';
+    const steps = Array.isArray(parsed.steps)
+      ? parsed.steps.filter((step) => typeof step === 'string' && step.trim()).slice(0, 4)
+      : [];
+    const snackIdeas = Array.isArray(parsed.snackIdeas)
+      ? parsed.snackIdeas.filter((item) => typeof item === 'string' && item.trim()).slice(0, 3)
+      : [];
+
+    return res.json({
+      quickTip,
+      steps,
+      snackIdeas,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Server error', detail: String(error) });
+  }
+});
+
 app.post('/v1/portion/coach', requireApiKey, async (req, res) => {
   try {
     const text = String(req.body?.text ?? '').trim();
     if (!text) {
       return res.status(400).json({ error: 'Missing text' });
     }
+    const unitSystem = normalizeUnitSystem(req.body?.unitSystem);
 
     const targetRaw = req.body?.targetCalories;
     let targetNumber = null;
@@ -449,7 +571,7 @@ app.post('/v1/portion/coach', requireApiKey, async (req, res) => {
       }
     }
 
-    const items = await analyzeFoodsFromText(text);
+    const items = await analyzeFoodsFromText(text, unitSystem);
     const { items: enriched, totalCalories } = await enrichItemsWithCalories(items);
 
     let summary = 'Review the estimate and adjust portions as needed.';

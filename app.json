@@ -2,7 +2,7 @@
   "expo": {
     "name": "Fasting Lane",
     "slug": "fasting-lane",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.dirkwybe.fastlane",
-      "buildNumber": "4",
+      "buildNumber": "6",
       "infoPlist": {
         "NSUserNotificationUsageDescription": "FastLane uses notifications to remind you about fasting and hydration.",
         "ITSAppUsesNonExemptEncryption": false

@@ -4,6 +4,8 @@ import * as SQLite from 'expo-sqlite';
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
+  Keyboard,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   SafeAreaView,
@@ -76,6 +78,9 @@ type ScanItem = {
 
 type ThemePreference = 'system' | 'light' | 'dark';
 type HydrationMode = 'fasting' | 'eating' | 'both';
+type UnitSystem = 'metric' | 'imperial';
+type ActivityLevel = 'sedentary' | 'light' | 'moderate' | 'active' | 'veryActive';
+type CalorieGoalMode = 'lose' | 'maintain' | 'gain';
 
 type FoodEstimateResult = {
   items: ScanItem[];
@@ -94,6 +99,25 @@ type GoalTuningResult = {
   recommendedProtocol: string;
   rationale: string;
   note?: string;
+};
+
+type AutopilotItem = {
+  time: string;
+  title: string;
+  calories: number;
+  notes?: string;
+};
+
+type AutopilotResult = {
+  items: AutopilotItem[];
+  totalCalories: number;
+  disclaimer?: string;
+};
+
+type CravingRescueResult = {
+  quickTip: string;
+  steps: string[];
+  snackIdeas?: string[];
 };
 
 type FridgeMealIdea = {
@@ -115,10 +139,14 @@ type SettingsState = {
   customFastingHours: number;
   customEatingHours: number;
   remindersEnabled: boolean;
+  allowNightReminders: boolean;
+  remindersIntroShown: boolean;
   hydrationEnabled: boolean;
   hydrationMode: HydrationMode;
   hydrationIntervalHours: number;
   dailyCalorieGoal: number;
+  unitSystem: UnitSystem;
+  historyRetentionDays: number;
   themePreference: ThemePreference;
 };
 
@@ -223,21 +251,35 @@ type Theme = {
   scanStatus: string;
   onDeleteNote: (id: number) => void;
   onOpenEditNote: (note: EatingNote) => void;
+  onOpenCalorieHelper: () => void;
+  onClearHistory: () => void;
+  autopilotResult: AutopilotResult | null;
+  autopilotBusy: boolean;
+  onRequestAutopilot: () => void;
+  onClearAutopilot: () => void;
+  rescueResult: CravingRescueResult | null;
+  rescueBusy: boolean;
+  onRequestRescue: () => void;
+  onClearRescue: () => void;
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
 
-  const DEFAULT_SETTINGS: SettingsState = {
-    protocolKey: '16:8',
-    customFastingHours: 16,
-    customEatingHours: 8,
-    remindersEnabled: true,
-    hydrationEnabled: true,
-    hydrationMode: 'fasting',
-    hydrationIntervalHours: 3,
-    dailyCalorieGoal: 0,
-    themePreference: 'system',
-  };
+const DEFAULT_SETTINGS: SettingsState = {
+  protocolKey: '16:8',
+  customFastingHours: 16,
+  customEatingHours: 8,
+  remindersEnabled: true,
+  allowNightReminders: false,
+  remindersIntroShown: false,
+  hydrationEnabled: true,
+  hydrationMode: 'fasting',
+  hydrationIntervalHours: 3,
+  dailyCalorieGoal: 0,
+  unitSystem: 'metric',
+  historyRetentionDays: 0,
+  themePreference: 'system',
+};
 
 const PROTOCOLS = [
   { key: '15:9', label: '15:9', fastingHours: 15, eatingHours: 9 },
@@ -245,6 +287,28 @@ const PROTOCOLS = [
   { key: '17:7', label: '17:7', fastingHours: 17, eatingHours: 7 },
   { key: '18:6', label: '18:6', fastingHours: 18, eatingHours: 6 },
   { key: 'custom', label: 'Custom', fastingHours: 0, eatingHours: 0 },
+];
+
+const ACTIVITY_LEVELS: {
+  key: ActivityLevel;
+  label: string;
+  factor: number;
+}[] = [
+  { key: 'sedentary', label: 'Sedentary', factor: 1.2 },
+  { key: 'light', label: 'Light', factor: 1.375 },
+  { key: 'moderate', label: 'Moderate', factor: 1.55 },
+  { key: 'active', label: 'Active', factor: 1.725 },
+  { key: 'veryActive', label: 'Very active', factor: 1.9 },
+];
+
+const CALORIE_GOALS: {
+  key: CalorieGoalMode;
+  label: string;
+  adjustment: number;
+}[] = [
+  { key: 'lose', label: 'Lose weight', adjustment: -400 },
+  { key: 'maintain', label: 'Maintain', adjustment: 0 },
+  { key: 'gain', label: 'Gain weight', adjustment: 300 },
 ];
 
 const FOOD_API_URL = process.env.EXPO_PUBLIC_FOOD_API_URL ?? '';
@@ -298,6 +362,15 @@ const formatTime = (ts: number) =>
 
 const formatDate = (ts: number) =>
   new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+const isQuietHours = (date: Date) => {
+  const hour = date.getHours();
+  const quietStart = 22;
+  const quietEnd = 7;
+  return quietStart > quietEnd
+    ? hour >= quietStart || hour < quietEnd
+    : hour >= quietStart && hour < quietEnd;
+};
 
 const startOfWeek = (date: Date) => {
   const day = date.getDay();
@@ -860,6 +933,14 @@ const SmartToolsScreen = ({
   fridgeBusy,
   onScanFridge,
   onClearFridgeIdeas,
+  autopilotResult,
+  autopilotBusy,
+  onRequestAutopilot,
+  onClearAutopilot,
+  rescueResult,
+  rescueBusy,
+  onRequestRescue,
+  onClearRescue,
 }: ScreenProps) => {
   const suggestedTarget =
     dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
@@ -873,9 +954,9 @@ const SmartToolsScreen = ({
           subtitle="AI-powered helpers"
         />
 
-        <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
-          <TextInput
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
+        <TextInput
             style={[styles.input, { color: theme.text, borderColor: theme.border }]}
             placeholder="Example: Turkey wrap and a latte"
             placeholderTextColor={theme.muted}
@@ -921,11 +1002,106 @@ const SmartToolsScreen = ({
                 <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
               ) : null}
             </View>
+        ) : null}
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating window autopilot</Text>
+        <Text style={[styles.meta, { color: theme.muted }]}>
+          Plan your eating window with a timed mini-menu.
+        </Text>
+        <View style={styles.row}>
+          <Pressable
+            style={[
+              styles.primaryButton,
+              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
+            ]}
+            onPress={onRequestAutopilot}
+            disabled={autopilotBusy}
+          >
+            <Text style={styles.primaryButtonText}>
+              {autopilotBusy ? 'Planning...' : 'Build plan'}
+            </Text>
+          </Pressable>
+          {autopilotResult ? (
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onClearAutopilot}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+            </Pressable>
           ) : null}
         </View>
+        {autopilotResult ? (
+          <View style={styles.smartResult}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>
+              Total target: {autopilotResult.totalCalories} kcal
+            </Text>
+            {autopilotResult.items.map((item, index) => (
+              <View key={`${item.time}-${index}`} style={styles.smartMeal}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  {item.time} - {item.title} ({item.calories} kcal)
+                </Text>
+                {item.notes ? (
+                  <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
+                ) : null}
+              </View>
+            ))}
+            {autopilotResult.disclaimer ? (
+              <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
 
-        <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Portion coach</Text>
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Craving rescue</Text>
+        <Text style={[styles.meta, { color: theme.muted }]}>
+          Tap the panic button for fast, calming steps.
+        </Text>
+        <View style={styles.row}>
+          <Pressable
+            style={[
+              styles.primaryButton,
+              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: rescueBusy ? 0.7 : 1 },
+            ]}
+            onPress={onRequestRescue}
+            disabled={rescueBusy}
+          >
+            <Text style={styles.primaryButtonText}>
+              {rescueBusy ? 'Coaching...' : 'Panic button'}
+            </Text>
+          </Pressable>
+          {rescueResult ? (
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onClearRescue}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {rescueResult ? (
+          <View style={styles.smartResult}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>
+              {rescueResult.quickTip}
+            </Text>
+            {rescueResult.steps.map((step, index) => (
+              <Text key={`${step}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                - {step}
+              </Text>
+            ))}
+            {rescueResult.snackIdeas && rescueResult.snackIdeas.length > 0 ? (
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Snack ideas: {rescueResult.snackIdeas.join(', ')}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Portion coach</Text>
           <TextInput
             style={[styles.input, { color: theme.text, borderColor: theme.border }]}
             placeholder="Example: Bowl of pasta with tomato sauce"
@@ -988,7 +1164,7 @@ const SmartToolsScreen = ({
         </Text>
         <TextInput
           style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-          placeholder={suggestedTarget ? `Limit kcal (e.g., ${suggestedTarget})` : 'Limit kcal'}
+          placeholder="Limit kcal (optional, default 400)"
           placeholderTextColor={theme.muted}
           value={fridgeLimit}
           onChangeText={setFridgeLimit}
@@ -1107,15 +1283,17 @@ const HistoryScreen = ({
             {window.notes.length > 0 ? (
               <View style={styles.historyNotes}>
                 {window.notes.map((note) => (
-                  <Text
-                    key={note.id}
-                    style={[styles.historyNoteText, { color: theme.text }]}
-                  >
-                    - {note.text}
-                    {note.calories !== null && note.calories !== undefined
-                      ? ` (${note.calories} kcal)`
-                      : ''}
-                  </Text>
+                  <View key={note.id} style={styles.historyNoteRow}>
+                    {note.thumbnail_path ? (
+                      <Image source={{ uri: note.thumbnail_path }} style={styles.historyThumb} />
+                    ) : null}
+                    <Text style={[styles.historyNoteText, { color: theme.text }]}>
+                      - {note.text}
+                      {note.calories !== null && note.calories !== undefined
+                        ? ` (${note.calories} kcal)`
+                        : ''}
+                    </Text>
+                  </View>
                 ))}
               </View>
             ) : null}
@@ -1133,6 +1311,8 @@ const SettingsScreen = ({
   notificationStatus,
   onRequestNotificationPermissions,
   onSendTestReminder,
+  onOpenCalorieHelper,
+  onClearHistory,
 }: ScreenProps) => (
   <ScreenShell theme={theme}>
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -1202,6 +1382,17 @@ const SettingsScreen = ({
             onValueChange={(value) => onUpdateSetting('remindersEnabled', value)}
           />
         </View>
+        <View style={styles.switchRow}>
+          <Text style={[styles.meta, { color: theme.text }]}>Allow night reminders</Text>
+          <Switch
+            value={settings.allowNightReminders}
+            onValueChange={(value) => onUpdateSetting('allowNightReminders', value)}
+            disabled={!settings.remindersEnabled}
+          />
+        </View>
+        <Text style={[styles.microLabel, { color: theme.muted }]}>
+          Quiet hours are 22:00-07:00. Night reminders are off by default.
+        </Text>
 
           <View style={styles.switchRow}>
             <Text style={[styles.meta, { color: theme.text }]}>Hydration reminders</Text>
@@ -1307,6 +1498,93 @@ const SettingsScreen = ({
             placeholderTextColor={theme.muted}
           />
         </View>
+        <View style={styles.row}>
+          <Pressable
+            style={[styles.secondaryButton, { borderColor: theme.border }]}
+            onPress={onOpenCalorieHelper}
+          >
+            <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+              Calorie helper
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Units</Text>
+        <View style={styles.noteRow}>
+          <Text style={[styles.meta, { color: theme.muted }]}>Food portions</Text>
+          {(['metric', 'imperial'] as UnitSystem[]).map((option) => (
+            <Pressable
+              key={option}
+              style={[
+                styles.pill,
+                {
+                  backgroundColor: settings.unitSystem === option ? theme.accent : theme.bg,
+                  borderColor: theme.border,
+                },
+              ]}
+              onPress={() => onUpdateSetting('unitSystem', option)}
+            >
+              <Text
+                style={[
+                  styles.pillText,
+                  { color: settings.unitSystem === option ? '#111' : theme.text },
+                ]}
+              >
+                {option === 'metric' ? 'Metric' : 'Imperial'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>History</Text>
+        <Text style={[styles.meta, { color: theme.muted }]}>Auto-delete old history</Text>
+        <View style={styles.pillRow}>
+          {[
+            { label: 'Keep all', value: 0 },
+            { label: '30 days', value: 30 },
+            { label: '90 days', value: 90 },
+            { label: '180 days', value: 180 },
+            { label: '365 days', value: 365 },
+          ].map((option) => (
+            <Pressable
+              key={option.label}
+              style={[
+                styles.pill,
+                {
+                  backgroundColor:
+                    settings.historyRetentionDays === option.value
+                      ? theme.accent
+                      : theme.bg,
+                  borderColor: theme.border,
+                },
+              ]}
+              onPress={() => onUpdateSetting('historyRetentionDays', option.value)}
+            >
+              <Text
+                style={[
+                  styles.pillText,
+                  { color: settings.historyRetentionDays === option.value ? '#111' : theme.text },
+                ]}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.row}>
+          <Pressable
+            style={[styles.secondaryButton, { borderColor: theme.border }]}
+            onPress={onClearHistory}
+          >
+            <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+              Clear all history
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={[styles.card, getCardStyle(theme)]}> 
@@ -1378,6 +1656,17 @@ export default function App() {
   const [fridgeLimit, setFridgeLimit] = useState('');
   const [fridgeIdeas, setFridgeIdeas] = useState<FridgeIdeasResult | null>(null);
   const [fridgeBusy, setFridgeBusy] = useState(false);
+  const [autopilotResult, setAutopilotResult] = useState<AutopilotResult | null>(null);
+  const [autopilotBusy, setAutopilotBusy] = useState(false);
+  const [rescueResult, setRescueResult] = useState<CravingRescueResult | null>(null);
+  const [rescueBusy, setRescueBusy] = useState(false);
+  const [calorieHelperVisible, setCalorieHelperVisible] = useState(false);
+  const [helperSex, setHelperSex] = useState<'female' | 'male'>('female');
+  const [helperAge, setHelperAge] = useState('');
+  const [helperHeight, setHelperHeight] = useState('');
+  const [helperWeight, setHelperWeight] = useState('');
+  const [helperActivity, setHelperActivity] = useState<ActivityLevel>('moderate');
+  const [helperGoal, setHelperGoal] = useState<CalorieGoalMode>('maintain');
   const [goalTuningResult, setGoalTuningResult] = useState<GoalTuningResult | null>(null);
   const [goalTuningBusy, setGoalTuningBusy] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
@@ -1470,20 +1759,28 @@ export default function App() {
     if (ready) {
       scheduleReminders(activeSession);
     }
-    }, [
-      ready,
-      activeSession,
-      settings.remindersEnabled,
-      settings.hydrationEnabled,
-      settings.hydrationMode,
-      settings.hydrationIntervalHours,
-      settings.protocolKey,
-      settings.customFastingHours,
-      settings.customEatingHours,
+  }, [
+    ready,
+    activeSession,
+    settings.remindersEnabled,
+    settings.allowNightReminders,
+    settings.hydrationEnabled,
+    settings.hydrationMode,
+    settings.hydrationIntervalHours,
+    settings.protocolKey,
+    settings.customFastingHours,
+    settings.customEatingHours,
     settings.dailyCalorieGoal,
     todayCalories,
     todayKey,
   ]);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (settings.historyRetentionDays > 0) {
+      purgeHistory(settings.historyRetentionDays);
+    }
+  }, [ready, settings.historyRetentionDays]);
 
   const getDb = () => {
     if (!dbRef.current) {
@@ -1521,6 +1818,12 @@ export default function App() {
         case 'remindersEnabled':
           loaded.remindersEnabled = row.value === 'true';
           break;
+        case 'allowNightReminders':
+          loaded.allowNightReminders = row.value === 'true';
+          break;
+        case 'remindersIntroShown':
+          loaded.remindersIntroShown = row.value === 'true';
+          break;
         case 'hydrationEnabled':
           loaded.hydrationEnabled = row.value === 'true';
           break;
@@ -1532,6 +1835,12 @@ export default function App() {
           break;
         case 'dailyCalorieGoal':
           loaded.dailyCalorieGoal = Number(row.value);
+          break;
+        case 'unitSystem':
+          loaded.unitSystem = row.value as UnitSystem;
+          break;
+        case 'historyRetentionDays':
+          loaded.historyRetentionDays = Number(row.value);
           break;
         case 'themePreference':
           loaded.themePreference = row.value as ThemePreference;
@@ -1564,6 +1873,41 @@ export default function App() {
     setNotes(notesResult);
     const active = sessionsResult.find((session) => session.end_time === null) ?? null;
     setActiveSession(active);
+  };
+
+  const purgeHistory = async (days: number) => {
+    if (!Number.isFinite(days) || days <= 0) return;
+    const cutoff = Date.now() - days * 24 * 3600 * 1000;
+    await run('DELETE FROM eating_notes WHERE timestamp < ?;', [cutoff]);
+    await run(
+      'DELETE FROM fasting_sessions WHERE end_time IS NOT NULL AND end_time < ?;',
+      [cutoff]
+    );
+    await refreshData();
+  };
+
+  const clearAllHistory = () => {
+    Alert.alert(
+      'Clear all history',
+      'This will delete all fasting sessions and eating notes. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await run('DELETE FROM fasting_sessions;');
+            await run('DELETE FROM eating_notes;');
+            setSessions([]);
+            setNotes([]);
+            setActiveSession(null);
+            lastCalorieReminderDateRef.current = null;
+            await Notifications.cancelAllScheduledNotificationsAsync();
+            await scheduleReminders(null, []);
+          },
+        },
+      ]
+    );
   };
 
   const getActiveSession = async () => {
@@ -1616,7 +1960,10 @@ export default function App() {
     }
   };
 
-  const scheduleReminders = async (session: FastingSession | null) => {
+  const scheduleReminders = async (
+    session: FastingSession | null,
+    sessionsOverride?: FastingSession[]
+  ) => {
     await Notifications.cancelAllScheduledNotificationsAsync();
     if (!settings.remindersEnabled) return;
 
@@ -1627,6 +1974,15 @@ export default function App() {
       settings.hydrationMode === 'fasting' || settings.hydrationMode === 'both';
     const hydrationDuringEating =
       settings.hydrationMode === 'eating' || settings.hydrationMode === 'both';
+    const shouldScheduleAt = (date: Date) =>
+      settings.allowNightReminders || !isQuietHours(date);
+
+    const completedSessions = (sessionsOverride ?? sessions).filter(
+      (item) => item.end_time !== null
+    );
+    const lastCompletedLocal = completedSessions.sort(
+      (a, b) => (b.end_time ?? 0) - (a.end_time ?? 0)
+    )[0];
 
     if (session) {
       const protocol = getProtocolDetails(settings);
@@ -1634,7 +1990,7 @@ export default function App() {
         session.end_time ??
         session.start_time + protocol.fastingHours * 3600 * 1000;
 
-      if (plannedEnd > Date.now()) {
+      if (plannedEnd > Date.now() && shouldScheduleAt(new Date(plannedEnd))) {
         await Notifications.scheduleNotificationAsync({
           content: {
             title: 'Fast complete',
@@ -1648,23 +2004,26 @@ export default function App() {
         const intervalMs = settings.hydrationIntervalHours * 3600 * 1000;
         let next = Date.now() + intervalMs;
         while (next < plannedEnd) {
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: 'Hydration check',
-              body: 'Take a moment to drink water.',
-            },
-            trigger: { type: 'date', date: new Date(next) },
-          });
+          const nextDate = new Date(next);
+          if (shouldScheduleAt(nextDate)) {
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title: 'Hydration check',
+                body: 'Take a moment to drink water.',
+              },
+              trigger: { type: 'date', date: nextDate },
+            });
+          }
           next += intervalMs;
         }
       }
     } else {
       const protocol = getProtocolDetails(settings);
-      const nextFastStart = lastCompleted?.end_time
-        ? lastCompleted.end_time + protocol.eatingHours * 3600 * 1000
+      const nextFastStart = lastCompletedLocal?.end_time
+        ? lastCompletedLocal.end_time + protocol.eatingHours * 3600 * 1000
         : null;
 
-      if (nextFastStart && nextFastStart > Date.now()) {
+      if (nextFastStart && nextFastStart > Date.now() && shouldScheduleAt(new Date(nextFastStart))) {
         await Notifications.scheduleNotificationAsync({
           content: {
             title: 'Start your fast',
@@ -1678,13 +2037,16 @@ export default function App() {
         const intervalMs = settings.hydrationIntervalHours * 3600 * 1000;
         let next = Date.now() + intervalMs;
         while (next < nextFastStart) {
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: 'Hydration check',
-              body: 'Take a moment to drink water.',
-            },
-            trigger: { type: 'date', date: new Date(next) },
-          });
+          const nextDate = new Date(next);
+          if (shouldScheduleAt(nextDate)) {
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title: 'Hydration check',
+                body: 'Take a moment to drink water.',
+              },
+              trigger: { type: 'date', date: nextDate },
+            });
+          }
           next += intervalMs;
         }
       }
@@ -1696,6 +2058,9 @@ export default function App() {
         todayCalories < settings.dailyCalorieGoal &&
         lastCalorieReminderDateRef.current !== todayKey;
       if (shouldRemind) {
+        if (!shouldScheduleAt(new Date())) {
+          return;
+        }
         const id = await Notifications.scheduleNotificationAsync({
           content: {
             title: 'Calorie goal near',
@@ -1832,6 +2197,7 @@ export default function App() {
         name: 'food.jpg',
         type: 'image/jpeg',
       } as unknown as Blob);
+      formData.append('unitSystem', settings.unitSystem);
 
       const response = await fetch(`${FOOD_API_URL}/v1/food/analyze`, {
         method: 'POST',
@@ -1889,7 +2255,7 @@ export default function App() {
           'Content-Type': 'application/json',
           ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
         },
-        body: JSON.stringify({ text: ifEatText.trim() }),
+        body: JSON.stringify({ text: ifEatText.trim(), unitSystem: settings.unitSystem }),
       });
       if (!response.ok) {
         const detail = await response.text();
@@ -1929,9 +2295,10 @@ export default function App() {
 
     setPortionBusy(true);
     try {
-      const payload: { text: string; targetCalories?: number } = {
+      const payload: { text: string; targetCalories?: number; unitSystem?: UnitSystem } = {
         text: portionText.trim(),
       };
+      payload.unitSystem = settings.unitSystem;
       if (Number.isFinite(suggestedTarget) && suggestedTarget !== null && suggestedTarget > 0) {
         payload.targetCalories = suggestedTarget;
       }
@@ -1967,15 +2334,7 @@ export default function App() {
     }
     const parsedLimit = Number(fridgeLimit);
     const suggestedLimit =
-      Number.isFinite(parsedLimit) && parsedLimit > 0
-        ? parsedLimit
-        : dailyCalorieGoal > 0
-          ? Math.max(0, dailyCalorieGoal - todayCalories)
-          : null;
-    if (!suggestedLimit || suggestedLimit <= 0) {
-      Alert.alert('Fridge ideas', 'Enter a calorie limit to generate ideas.');
-      return;
-    }
+      Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 400;
 
     setFridgeIdeas(null);
     setFridgeBusy(true);
@@ -2020,6 +2379,135 @@ export default function App() {
 
   const clearFridgeIdeas = () => {
     setFridgeIdeas(null);
+  };
+
+  const requestAutopilot = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Autopilot', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    if (activeSession) {
+      Alert.alert('Autopilot', 'Autopilot is available during eating windows.');
+      return;
+    }
+    const remainingMinutes = eatingWindowRemainingMs
+      ? Math.max(15, Math.round(eatingWindowRemainingMs / 60000))
+      : Math.max(15, protocol.eatingHours * 60);
+    const remainingCalories =
+      settings.dailyCalorieGoal > 0
+        ? Math.max(0, settings.dailyCalorieGoal - todayCalories)
+        : null;
+    setAutopilotResult(null);
+    setAutopilotBusy(true);
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/autopilot`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          windowMinutes: remainingMinutes,
+          remainingCalories,
+          dailyGoal: settings.dailyCalorieGoal || null,
+          unitSystem: settings.unitSystem,
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Autopilot failed.');
+      }
+      const data = (await response.json()) as AutopilotResult;
+      setAutopilotResult(data);
+    } catch (error) {
+      Alert.alert('Autopilot failed', String(error));
+    } finally {
+      setAutopilotBusy(false);
+    }
+  };
+
+  const clearAutopilot = () => {
+    setAutopilotResult(null);
+  };
+
+  const requestRescue = async () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Craving rescue', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    const remainingCalories =
+      settings.dailyCalorieGoal > 0
+        ? Math.max(0, settings.dailyCalorieGoal - todayCalories)
+        : null;
+    const minutesLeft =
+      activeSession && expectedEnd ? Math.max(0, Math.round((expectedEnd - now) / 60000)) : null;
+    setRescueResult(null);
+    setRescueBusy(true);
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/craving/rescue`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          isFasting: Boolean(activeSession),
+          minutesLeft,
+          remainingCalories,
+          unitSystem: settings.unitSystem,
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Rescue failed.');
+      }
+      const data = (await response.json()) as CravingRescueResult;
+      setRescueResult(data);
+    } catch (error) {
+      Alert.alert('Craving rescue failed', String(error));
+    } finally {
+      setRescueBusy(false);
+    }
+  };
+
+  const clearRescue = () => {
+    setRescueResult(null);
+  };
+
+  const getCalorieHelperEstimate = () => {
+    const age = Number(helperAge);
+    const height = Number(helperHeight);
+    const weight = Number(helperWeight);
+    if (
+      !Number.isFinite(age) ||
+      !Number.isFinite(height) ||
+      !Number.isFinite(weight) ||
+      age <= 0 ||
+      height <= 0 ||
+      weight <= 0
+    ) {
+      return null;
+    }
+    const base =
+      helperSex === 'male'
+        ? 10 * weight + 6.25 * height - 5 * age + 5
+        : 10 * weight + 6.25 * height - 5 * age - 161;
+    const activityFactor =
+      ACTIVITY_LEVELS.find((level) => level.key === helperActivity)?.factor ?? 1.2;
+    const goalAdjustment =
+      CALORIE_GOALS.find((goal) => goal.key === helperGoal)?.adjustment ?? 0;
+    const estimate = Math.round(base * activityFactor + goalAdjustment);
+    return estimate > 0 ? estimate : null;
+  };
+
+  const applyCalorieHelper = () => {
+    const estimate = getCalorieHelperEstimate();
+    if (!estimate) {
+      Alert.alert('Calorie helper', 'Add your age, height, and weight to get a goal.');
+      return;
+    }
+    updateSetting('dailyCalorieGoal', estimate);
+    setCalorieHelperVisible(false);
   };
 
   const requestGoalTuning = async () => {
@@ -2323,8 +2811,20 @@ export default function App() {
     value: SettingsState[K]
   ) => {
     const next = { ...settings, [key]: value };
+    let showIntro = false;
+    if (key === 'remindersEnabled' && value === true && !settings.remindersIntroShown) {
+      next.remindersIntroShown = true;
+      showIntro = true;
+    }
     setSettings(next);
     await persistSetting(key, value);
+    if (showIntro) {
+      await persistSetting('remindersIntroShown', true);
+      Alert.alert(
+        'Reminders enabled',
+        'Night reminders are off by default. Enable them in Settings if you want overnight notifications.'
+      );
+    }
   };
 
   const applyGoalTuning = () => {
@@ -2435,6 +2935,16 @@ export default function App() {
     scanStatus,
     onDeleteNote: deleteNote,
     onOpenEditNote: openEditNote,
+    onOpenCalorieHelper: () => setCalorieHelperVisible(true),
+    onClearHistory: clearAllHistory,
+    autopilotResult,
+    autopilotBusy,
+    onRequestAutopilot: requestAutopilot,
+    onClearAutopilot: clearAutopilot,
+    rescueResult,
+    rescueBusy,
+    onRequestRescue: requestRescue,
+    onClearRescue: clearRescue,
   };
 
   if (!ready || !fontsLoaded) {
@@ -2606,15 +3116,19 @@ export default function App() {
       ) : null}
 
       <Modal visible={scanVisible} animationType="slide" transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalContent, getCardStyle(theme)]}>
+        <Pressable style={styles.modalBackdrop} onPress={Keyboard.dismiss}>
+          <KeyboardAvoidingView
+            style={styles.modalAvoid}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <Pressable style={[styles.modalContent, getCardStyle(theme)]}>
             <Text style={[styles.sectionTitle, { color: theme.text }]}>
               Review photo estimate
             </Text>
             {scanThumbPath ? (
               <Image source={{ uri: scanThumbPath }} style={styles.scanThumb} />
             ) : null}
-            <ScrollView style={styles.scanList}>
+            <ScrollView style={styles.scanList} keyboardShouldPersistTaps="handled">
                 {scanItems?.map((item, index) => {
                   const isUnrecognized =
                     item.calories === null ||
@@ -2639,7 +3153,11 @@ export default function App() {
                           ]}
                           value={item.portion ?? ''}
                           onChangeText={(value) => updateScanItemPortion(index, value)}
-                          placeholder="Portion (e.g., 150 g)"
+                          placeholder={
+                            settings.unitSystem === 'imperial'
+                              ? 'Portion (e.g., 5 oz)'
+                              : 'Portion (e.g., 150 g)'
+                          }
                           placeholderTextColor={theme.muted}
                         />
                         <TextInput
@@ -2718,8 +3236,9 @@ export default function App() {
                 </Text>
               </Pressable>
             </View>
-          </View>
-        </View>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
       </Modal>
 
       <Modal visible={editNoteVisible} animationType="slide" transparent>
@@ -2764,6 +3283,169 @@ export default function App() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      <Modal visible={calorieHelperVisible} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={Keyboard.dismiss}>
+          <KeyboardAvoidingView
+            style={styles.modalAvoid}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <Pressable style={[styles.modalContent, getCardStyle(theme)]}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                Calorie helper
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Uses metric units (kg and cm) to estimate a daily goal.
+              </Text>
+
+              <View style={styles.timingBlock}>
+                <Text style={[styles.meta, { color: theme.muted }]}>Sex</Text>
+                <View style={styles.pillRow}>
+                  {(['female', 'male'] as const).map((option) => (
+                    <Pressable
+                      key={option}
+                      style={[
+                        styles.pill,
+                        {
+                          backgroundColor: helperSex === option ? theme.accent : theme.bg,
+                          borderColor: theme.border,
+                        },
+                      ]}
+                      onPress={() => setHelperSex(option)}
+                    >
+                      <Text
+                        style={[
+                          styles.pillText,
+                          { color: helperSex === option ? '#111' : theme.text },
+                        ]}
+                      >
+                        {option === 'female' ? 'Female' : 'Male'}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.noteRow}>
+                <Text style={[styles.meta, { color: theme.muted }]}>Age</Text>
+                <TextInput
+                  style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                  value={helperAge}
+                  onChangeText={setHelperAge}
+                  keyboardType="numeric"
+                  placeholder="Years"
+                  placeholderTextColor={theme.muted}
+                />
+              </View>
+              <View style={styles.noteRow}>
+                <Text style={[styles.meta, { color: theme.muted }]}>Height</Text>
+                <TextInput
+                  style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                  value={helperHeight}
+                  onChangeText={setHelperHeight}
+                  keyboardType="numeric"
+                  placeholder="cm"
+                  placeholderTextColor={theme.muted}
+                />
+              </View>
+              <View style={styles.noteRow}>
+                <Text style={[styles.meta, { color: theme.muted }]}>Weight</Text>
+                <TextInput
+                  style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                  value={helperWeight}
+                  onChangeText={setHelperWeight}
+                  keyboardType="numeric"
+                  placeholder="kg"
+                  placeholderTextColor={theme.muted}
+                />
+              </View>
+
+              <View style={styles.timingBlock}>
+                <Text style={[styles.meta, { color: theme.muted }]}>Activity</Text>
+                <View style={styles.pillRow}>
+                  {ACTIVITY_LEVELS.map((level) => (
+                    <Pressable
+                      key={level.key}
+                      style={[
+                        styles.pill,
+                        {
+                          backgroundColor: helperActivity === level.key ? theme.accent : theme.bg,
+                          borderColor: theme.border,
+                        },
+                      ]}
+                      onPress={() => setHelperActivity(level.key)}
+                    >
+                      <Text
+                        style={[
+                          styles.pillText,
+                          { color: helperActivity === level.key ? '#111' : theme.text },
+                        ]}
+                      >
+                        {level.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.timingBlock}>
+                <Text style={[styles.meta, { color: theme.muted }]}>Goal</Text>
+                <View style={styles.pillRow}>
+                  {CALORIE_GOALS.map((goal) => (
+                    <Pressable
+                      key={goal.key}
+                      style={[
+                        styles.pill,
+                        {
+                          backgroundColor: helperGoal === goal.key ? theme.accent : theme.bg,
+                          borderColor: theme.border,
+                        },
+                      ]}
+                      onPress={() => setHelperGoal(goal.key)}
+                    >
+                      <Text
+                        style={[
+                          styles.pillText,
+                          { color: helperGoal === goal.key ? '#111' : theme.text },
+                        ]}
+                      >
+                        {goal.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Suggested goal:{' '}
+                {getCalorieHelperEstimate()
+                  ? `${getCalorieHelperEstimate()} kcal/day`
+                  : 'Enter your details'}
+              </Text>
+
+              <View style={styles.row}>
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow },
+                  ]}
+                  onPress={applyCalorieHelper}
+                >
+                  <Text style={styles.primaryButtonText}>Apply goal</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.secondaryButton, { borderColor: theme.border }]}
+                  onPress={() => setCalorieHelperVisible(false)}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                    Cancel
+                  </Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
       </Modal>
     </>
   );
@@ -3119,6 +3801,16 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingLeft: 8,
   },
+  historyNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  historyThumb: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+  },
   historyNoteText: {
     fontSize: 12,
     fontFamily: 'Manrope_500Medium',
@@ -3168,6 +3860,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     padding: 20,
+  },
+  modalAvoid: {
+    width: '100%',
   },
   modalContent: {
     borderRadius: 18,
