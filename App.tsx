@@ -261,6 +261,7 @@ type Theme = {
   rescueBusy: boolean;
   onRequestRescue: () => void;
   onClearRescue: () => void;
+  onOpenRescue: () => void;
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
@@ -362,6 +363,14 @@ const formatTime = (ts: number) =>
 
 const formatDate = (ts: number) =>
   new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+const getDateKey = (ts: number) => {
+  const date = new Date(ts);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const isQuietHours = (date: Date) => {
   const hour = date.getHours();
@@ -499,6 +508,8 @@ const HomeScreen = ({
   currentWindowLabel,
   currentWindowCalories,
   currentWindowNotes,
+  onOpenRescue,
+  rescueBusy,
   nextReminderLabel,
   nextHydrationLabel,
   onStartFast,
@@ -646,6 +657,27 @@ const HomeScreen = ({
           <Text style={[styles.metricValue, { color: theme.text }]}>{adherencePct}%</Text>
         </View>
       </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}>
+        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Craving rescue</Text>
+        <Text style={[styles.meta, { color: theme.muted }]}>
+          Need a reset? Tap the panic button for quick, calming steps.
+        </Text>
+        <View style={styles.row}>
+          <Pressable
+            style={[
+              styles.primaryButton,
+              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: rescueBusy ? 0.7 : 1 },
+            ]}
+            onPress={onOpenRescue}
+            disabled={rescueBusy}
+          >
+            <Text style={styles.primaryButtonText}>
+              {rescueBusy ? 'Coaching...' : 'Panic button'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
     </ScrollView>
   </ScreenShell>
   );
@@ -781,6 +813,10 @@ const EatingScreen = ({
   onDeleteNote,
   onOpenEditNote,
   isFasting,
+  autopilotResult,
+  autopilotBusy,
+  onRequestAutopilot,
+  onClearAutopilot,
 }: ScreenProps) => {
   return (
   <ScreenShell theme={theme}>
@@ -865,6 +901,55 @@ const EatingScreen = ({
         </View>
 
         <View style={[styles.card, getCardStyle(theme)]}> 
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating window autopilot</Text>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Plan your eating window with a timed mini-menu.
+          </Text>
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
+              ]}
+              onPress={onRequestAutopilot}
+              disabled={autopilotBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {autopilotBusy ? 'Planning...' : 'Build plan'}
+              </Text>
+            </Pressable>
+            {autopilotResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearAutopilot}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {autopilotResult ? (
+            <View style={styles.smartResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Total target: {autopilotResult.totalCalories} kcal
+              </Text>
+              {autopilotResult.items.map((item, index) => (
+                <View key={`${item.time}-${index}`} style={styles.smartMeal}>
+                  <Text style={[styles.metaStrong, { color: theme.text }]}>
+                    {item.time} - {item.title} ({item.calories} kcal)
+                  </Text>
+                  {item.notes ? (
+                    <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
+                  ) : null}
+                </View>
+              ))}
+              {autopilotResult.disclaimer ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+
+        <View style={[styles.card, getCardStyle(theme)]}> 
           <Text style={[styles.sectionTitle, { color: theme.muted }]}>Window notes</Text>
         {currentWindowNotes.length === 0 ? (
           <Text style={[styles.meta, { color: theme.muted }]}>
@@ -933,14 +1018,6 @@ const SmartToolsScreen = ({
   fridgeBusy,
   onScanFridge,
   onClearFridgeIdeas,
-  autopilotResult,
-  autopilotBusy,
-  onRequestAutopilot,
-  onClearAutopilot,
-  rescueResult,
-  rescueBusy,
-  onRequestRescue,
-  onClearRescue,
 }: ScreenProps) => {
   const suggestedTarget =
     dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
@@ -1002,101 +1079,6 @@ const SmartToolsScreen = ({
                 <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
               ) : null}
             </View>
-        ) : null}
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating window autopilot</Text>
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Plan your eating window with a timed mini-menu.
-        </Text>
-        <View style={styles.row}>
-          <Pressable
-            style={[
-              styles.primaryButton,
-              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
-            ]}
-            onPress={onRequestAutopilot}
-            disabled={autopilotBusy}
-          >
-            <Text style={styles.primaryButtonText}>
-              {autopilotBusy ? 'Planning...' : 'Build plan'}
-            </Text>
-          </Pressable>
-          {autopilotResult ? (
-            <Pressable
-              style={[styles.secondaryButton, { borderColor: theme.border }]}
-              onPress={onClearAutopilot}
-            >
-              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {autopilotResult ? (
-          <View style={styles.smartResult}>
-            <Text style={[styles.metaStrong, { color: theme.text }]}>
-              Total target: {autopilotResult.totalCalories} kcal
-            </Text>
-            {autopilotResult.items.map((item, index) => (
-              <View key={`${item.time}-${index}`} style={styles.smartMeal}>
-                <Text style={[styles.metaStrong, { color: theme.text }]}>
-                  {item.time} - {item.title} ({item.calories} kcal)
-                </Text>
-                {item.notes ? (
-                  <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
-                ) : null}
-              </View>
-            ))}
-            {autopilotResult.disclaimer ? (
-              <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Craving rescue</Text>
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Tap the panic button for fast, calming steps.
-        </Text>
-        <View style={styles.row}>
-          <Pressable
-            style={[
-              styles.primaryButton,
-              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: rescueBusy ? 0.7 : 1 },
-            ]}
-            onPress={onRequestRescue}
-            disabled={rescueBusy}
-          >
-            <Text style={styles.primaryButtonText}>
-              {rescueBusy ? 'Coaching...' : 'Panic button'}
-            </Text>
-          </Pressable>
-          {rescueResult ? (
-            <Pressable
-              style={[styles.secondaryButton, { borderColor: theme.border }]}
-              onPress={onClearRescue}
-            >
-              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {rescueResult ? (
-          <View style={styles.smartResult}>
-            <Text style={[styles.metaStrong, { color: theme.text }]}>
-              {rescueResult.quickTip}
-            </Text>
-            {rescueResult.steps.map((step, index) => (
-              <Text key={`${step}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                - {step}
-              </Text>
-            ))}
-            {rescueResult.snackIdeas && rescueResult.snackIdeas.length > 0 ? (
-              <Text style={[styles.meta, { color: theme.muted }]}>
-                Snack ideas: {rescueResult.snackIdeas.join(', ')}
-              </Text>
-            ) : null}
-          </View>
         ) : null}
       </View>
 
@@ -1660,6 +1642,7 @@ export default function App() {
   const [autopilotBusy, setAutopilotBusy] = useState(false);
   const [rescueResult, setRescueResult] = useState<CravingRescueResult | null>(null);
   const [rescueBusy, setRescueBusy] = useState(false);
+  const [rescueVisible, setRescueVisible] = useState(false);
   const [calorieHelperVisible, setCalorieHelperVisible] = useState(false);
   const [helperSex, setHelperSex] = useState<'female' | 'male'>('female');
   const [helperAge, setHelperAge] = useState('');
@@ -2430,8 +2413,8 @@ export default function App() {
     setAutopilotResult(null);
   };
 
-  const requestRescue = async () => {
-    if (!FOOD_API_URL) {
+  const requestRescue = async (skipApiCheck?: boolean) => {
+    if (!skipApiCheck && !FOOD_API_URL) {
       Alert.alert('Craving rescue', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
       return;
     }
@@ -2441,6 +2424,9 @@ export default function App() {
         : null;
     const minutesLeft =
       activeSession && expectedEnd ? Math.max(0, Math.round((expectedEnd - now) / 60000)) : null;
+    const fastingDurationMinutes = activeSession
+      ? Math.max(0, Math.round(activeDuration / 60000))
+      : null;
     setRescueResult(null);
     setRescueBusy(true);
     try {
@@ -2453,6 +2439,8 @@ export default function App() {
         body: JSON.stringify({
           isFasting: Boolean(activeSession),
           minutesLeft,
+          fastingDurationMinutes,
+          streakDays,
           remainingCalories,
           unitSystem: settings.unitSystem,
         }),
@@ -2472,6 +2460,15 @@ export default function App() {
 
   const clearRescue = () => {
     setRescueResult(null);
+  };
+
+  const openRescue = () => {
+    if (!FOOD_API_URL) {
+      Alert.alert('Craving rescue', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
+      return;
+    }
+    setRescueVisible(true);
+    requestRescue(true);
   };
 
   const getCalorieHelperEstimate = () => {
@@ -2702,6 +2699,28 @@ export default function App() {
   }, 0);
 
   const todayKey = new Date(now).toDateString();
+  const streakDays = (() => {
+    if (sessions.length === 0 && !activeSession) return 0;
+    const daySet = new Set<string>();
+    sessions.forEach((session) => {
+      daySet.add(getDateKey(session.start_time));
+      if (session.end_time) {
+        daySet.add(getDateKey(session.end_time));
+      }
+    });
+    if (activeSession) {
+      daySet.add(getDateKey(now));
+    }
+    let count = 0;
+    for (let offset = 0; offset < 3650; offset += 1) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - offset);
+      const key = getDateKey(date.getTime());
+      if (!daySet.has(key)) break;
+      count += 1;
+    }
+    return count;
+  })();
 
   const completedSessions = sessions
     .filter((session) => session.end_time !== null)
@@ -2945,6 +2964,7 @@ export default function App() {
     rescueBusy,
     onRequestRescue: requestRescue,
     onClearRescue: clearRescue,
+    onOpenRescue: openRescue,
   };
 
   if (!ready || !fontsLoaded) {
@@ -3283,6 +3303,50 @@ export default function App() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      <Modal visible={rescueVisible} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setRescueVisible(false)}>
+          <Pressable style={[styles.modalContent, getCardStyle(theme)]} onPress={() => {}}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>
+              Craving rescue
+            </Text>
+            {rescueBusy ? (
+              <View style={styles.inlineRow}>
+                <ActivityIndicator size="small" color={theme.accent} />
+                <Text style={[styles.meta, { color: theme.muted }]}>Pulling your plan...</Text>
+              </View>
+            ) : rescueResult ? (
+              <View style={styles.smartResult}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  {rescueResult.quickTip}
+                </Text>
+                {rescueResult.steps.map((step, index) => (
+                  <Text key={`${step}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                    - {step}
+                  </Text>
+                ))}
+                {rescueResult.snackIdeas && rescueResult.snackIdeas.length > 0 ? (
+                  <Text style={[styles.meta, { color: theme.muted }]}>
+                    Snack ideas: {rescueResult.snackIdeas.join(', ')}
+                  </Text>
+                ) : null}
+              </View>
+            ) : (
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Tap again if you want another rescue plan.
+              </Text>
+            )}
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={() => setRescueVisible(false)}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Close</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       <Modal visible={calorieHelperVisible} animationType="slide" transparent>

@@ -509,6 +509,8 @@ app.post('/v1/craving/rescue', requireApiKey, async (req, res) => {
   try {
     const isFasting = Boolean(req.body?.isFasting);
     const minutesLeft = Number(req.body?.minutesLeft);
+    const fastingDurationMinutes = Number(req.body?.fastingDurationMinutes);
+    const streakDays = Number(req.body?.streakDays);
     const remainingCaloriesRaw = Number(req.body?.remainingCalories);
     const remainingCalories = Number.isFinite(remainingCaloriesRaw)
       ? remainingCaloriesRaw
@@ -521,13 +523,17 @@ app.post('/v1/craving/rescue', requireApiKey, async (req, res) => {
         {
           role: 'system',
           content:
-            'You are a calm, supportive coach. Provide a quick tip and 3 short steps to handle cravings. If fasting, avoid food suggestions. If not fasting, include 2 snack ideas under the remaining calories if provided. Return only JSON: {"quickTip": string, "steps": string[], "snackIdeas": string[]}.',
+            'You are a calm, supportive coach. Provide a quick tip and 3 short steps to handle cravings. Reference motivation if context is provided (time left or streak). If fasting, avoid food suggestions. If not fasting, include 2 snack ideas under the remaining calories if provided. Return only JSON: {"quickTip": string, "steps": string[], "snackIdeas": string[]}.',
         },
         {
           role: 'user',
           content: `Status: ${isFasting ? 'fasting' : 'eating'}. Minutes left: ${
             Number.isFinite(minutesLeft) ? minutesLeft : 'n/a'
-          }. Remaining calories: ${remainingCalories ?? 'n/a'}. Unit system: ${unitSystem}.`,
+          }. Fasting duration: ${
+            Number.isFinite(fastingDurationMinutes) ? fastingDurationMinutes : 'n/a'
+          } minutes. Streak days: ${Number.isFinite(streakDays) ? streakDays : 'n/a'}. Remaining calories: ${
+            remainingCalories ?? 'n/a'
+          }. Unit system: ${unitSystem}.`,
         },
       ],
     });
