@@ -243,26 +243,100 @@ const enrichItemsWithCalories = async (items) => {
   return { items: enriched, totalCalories };
 };
 
-const fetchUSDA = async (query) => {
-  const key = process.env.USDAFOOD_KEY;
-  if (!key) throw new Error('Missing USDAFOOD_KEY');
-  const url = `https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${encodeURIComponent(
-    key
-  )}&query=${encodeURIComponent(query)}&pageSize=1`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    return null;
-  }
-  const data = await response.json();
-  const food = data?.foods?.[0];
-  if (!food) return null;
+const getKcalPer100g = (food) => {
   const nutrient = (food.foodNutrients || []).find(
     (item) => item.nutrientId === 1008
   );
-  const kcal = nutrient?.value ?? null;
+  const kcal = Number(nutrient?.value);
+  return Number.isFinite(kcal) ? kcal : null;
+};
+
+const selectBestFood = (foods, options) => {
+  let best = null;
+  foods.forEach((food) => {
+    const description = String(food.description ?? '').toLowerCase();
+    const category = String(food.foodCategory ?? '').toLowerCase();
+    const kcal = getKcalPer100g(food);
+    let score = 0;
+    if (description.includes('powder') || description.includes('dry') || description.includes('mix')) {
+      score += 4;
+    }
+    if (description.includes('instant')) {
+      score += 2;
+    }
+    if (description.includes('brewed') || description.includes('prepared') || description.includes('beverage') || description.includes('drink')) {
+      score -= 2;
+    }
+    if (category.includes('beverage')) {
+      score -= 1;
+    }
+    if (options.isBlackCoffee && kcal !== null && kcal > 20) {
+      score += 4;
+    }
+    if (options.isBlackCoffee && description.includes('black')) {
+      score -= 1;
+    }
+    if (options.isCoffee && options.hasDairy) {
+      if (description.includes('latte') || description.includes('cappuccino') || description.includes('mocha') || description.includes('macchiato')) {
+        score -= 1;
+      }
+    }
+    if (kcal === null) {
+      score += 2;
+    }
+    if (!best || score < best.score || (score === best.score && options.isBlackCoffee && kcal !== null && kcal < best.kcal)) {
+      best = {
+        score,
+        kcal,
+        name: food.description,
+      };
+    }
+  });
+  return best;
+};
+
+const fetchUSDA = async (query) => {
+  const key = process.env.USDAFOOD_KEY;
+  if (!key) throw new Error('Missing USDAFOOD_KEY');
+
+  const normalized = String(query).toLowerCase();
+  const isCoffee = /(coffee|americano|espresso)/i.test(normalized);
+  const hasDairy = /(latte|cappuccino|mocha|macchiato|milk|cream|creamer|frappe|sweet|sugar|syrup)/i.test(
+    normalized
+  );
+  const isBlackCoffee = isCoffee && !hasDairy;
+
+  const attempts = isBlackCoffee ? ['coffee brewed', query] : [query];
+  let bestCandidate = null;
+
+  for (const attempt of attempts) {
+    const url = `https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${encodeURIComponent(
+      key
+    )}&query=${encodeURIComponent(attempt)}&pageSize=5`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      continue;
+    }
+    const data = await response.json();
+    const foods = Array.isArray(data?.foods) ? data.foods : [];
+    if (!foods.length) continue;
+
+    const selected = selectBestFood(foods, { isCoffee, hasDairy, isBlackCoffee });
+    if (selected && (!isBlackCoffee || (selected.kcal !== null && selected.kcal <= 20))) {
+      return {
+        name: selected.name,
+        kcalPer100g: selected.kcal,
+      };
+    }
+    if (selected && (!bestCandidate || selected.score < bestCandidate.score)) {
+      bestCandidate = selected;
+    }
+  }
+
+  if (!bestCandidate) return null;
   return {
-    name: food.description,
-    kcalPer100g: kcal,
+    name: bestCandidate.name,
+    kcalPer100g: bestCandidate.kcal,
   };
 };
 
