@@ -78,6 +78,14 @@ const parseGramsFromText = (text) => {
 
 const normalizeUnitSystem = (value) => (value === 'imperial' ? 'imperial' : 'metric');
 
+const PROTOCOL_ORDER = ['15:9', '16:8', '17:7', '18:6'];
+const PROTOCOL_EATING_HOURS = {
+  '15:9': 9,
+  '16:8': 8,
+  '17:7': 7,
+  '18:6': 6,
+};
+
 const unitSystemHint = (unitSystem) =>
   unitSystem === 'imperial'
     ? 'Use imperial units (oz, lb, fl oz) for portion descriptions, but keep grams as a numeric gram estimate.'
@@ -338,6 +346,69 @@ const fetchUSDA = async (query) => {
     name: bestCandidate.name,
     kcalPer100g: bestCandidate.kcal,
   };
+};
+
+const clampProtocolForMinEating = (protocolKey, minEatingHours) => {
+  const allowed = PROTOCOL_ORDER.filter(
+    (key) => (PROTOCOL_EATING_HOURS[key] ?? 0) >= minEatingHours
+  );
+  if (!allowed.length) return protocolKey;
+  if (allowed.includes(protocolKey)) return protocolKey;
+  return allowed[allowed.length - 1];
+};
+
+const resolveTargetProtocol = (goalMode, pace, minEatingHours) => {
+  const mapping = {
+    lose: { gentle: '16:8', moderate: '17:7', aggressive: '18:6' },
+    maintain: { gentle: '15:9', moderate: '16:8', aggressive: '17:7' },
+    gain: { gentle: '15:9', moderate: '15:9', aggressive: '16:8' },
+  };
+  const target = mapping?.[goalMode]?.[pace] ?? '16:8';
+  return clampProtocolForMinEating(target, minEatingHours);
+};
+
+const getProtocolIndex = (protocolKey) => {
+  const index = PROTOCOL_ORDER.indexOf(protocolKey);
+  return index === -1 ? 1 : index;
+};
+
+const getCalorieAdjustment = (goalMode, pace) => {
+  if (goalMode === 'maintain') return 0;
+  const magnitude = pace === 'aggressive' ? 300 : pace === 'moderate' ? 200 : 100;
+  return goalMode === 'lose' ? -magnitude : magnitude;
+};
+
+const buildPlanWeeks = ({
+  startProtocol,
+  goalMode,
+  pace,
+  rampWeeks,
+  minEatingHours,
+  baseCalories,
+}) => {
+  const safeWeeks = Math.max(2, Math.min(8, rampWeeks));
+  const targetProtocol = resolveTargetProtocol(goalMode, pace, minEatingHours);
+  const startClamped = clampProtocolForMinEating(startProtocol, minEatingHours);
+  const startIndex = getProtocolIndex(startClamped);
+  const targetIndex = getProtocolIndex(targetProtocol);
+  const steps = Math.max(0, targetIndex - startIndex);
+  const adjustment = getCalorieAdjustment(goalMode, pace);
+  const weeks = Array.from({ length: safeWeeks }, (_, weekIndex) => {
+    const progress = safeWeeks === 1 ? 0 : weekIndex / (safeWeeks - 1);
+    const step = steps === 0 ? 0 : Math.round(steps * progress);
+    const protocolKey = PROTOCOL_ORDER[Math.min(startIndex + step, targetIndex)];
+    const dailyCalories =
+      baseCalories > 0
+        ? Math.max(0, Math.round(baseCalories + adjustment * progress))
+        : null;
+    return {
+      weekIndex,
+      protocolKey,
+      dailyCalories,
+      notes: weekIndex === 0 ? 'Start steady and focus on consistency.' : null,
+    };
+  });
+  return { targetProtocol, weeks };
 };
 
 app.get('/health', (_, res) => {
@@ -691,6 +762,86 @@ app.post('/v1/portion/coach', requireApiKey, async (req, res) => {
       adjustments,
       items: enriched,
       disclaimer: 'Estimates only. Please review portions before saving.',
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Server error', detail: String(error) });
+  }
+});
+
+app.post('/v1/plan/recommend', requireApiKey, async (req, res) => {
+  try {
+    const goalMode = String(req.body?.goalMode ?? 'maintain').trim();
+    const pace = String(req.body?.targetPace ?? 'gentle').trim();
+    const startProtocol = String(req.body?.startProtocol ?? '16:8').trim();
+    const minEatingHoursRaw = Number(req.body?.minEatingHours ?? 8);
+    const rampWeeksRaw = Number(req.body?.rampWeeks ?? 4);
+    const baseCaloriesRaw = Number(req.body?.dailyCalorieGoal ?? 0);
+
+    const minEatingHours = Number.isFinite(minEatingHoursRaw)
+      ? Math.max(6, Math.min(12, minEatingHoursRaw))
+      : 8;
+    const rampWeeks = Number.isFinite(rampWeeksRaw)
+      ? Math.max(2, Math.min(8, rampWeeksRaw))
+      : 4;
+    const baseCalories = Number.isFinite(baseCaloriesRaw) ? baseCaloriesRaw : 0;
+
+    const fallback = buildPlanWeeks({
+      startProtocol,
+      goalMode,
+      pace,
+      rampWeeks,
+      minEatingHours,
+      baseCalories,
+    });
+
+    let content = null;
+    try {
+      content = await callOpenAI({
+        temperature: 0.25,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a fasting coach. Build a week-by-week ramp plan. Return only JSON: {"targetProtocol": string, "weeks": [{"weekIndex": number, "protocolKey": string, "dailyCalories": number|null, "notes": string|null}], "rationale": string}. Allowed protocols: 15:9, 16:8, 17:7, 18:6. Respect minimum eating hours and ramp length.',
+          },
+          {
+            role: 'user',
+            content: `Goal: ${goalMode}. Pace: ${pace}. Start protocol: ${startProtocol}. Min eating hours: ${minEatingHours}. Ramp weeks: ${rampWeeks}. Base calories: ${baseCalories}.`,
+          },
+        ],
+      });
+    } catch (error) {
+      content = null;
+    }
+
+    const parsed = extractJson(content) || {};
+    const targetProtocol = PROTOCOL_ORDER.includes(parsed.targetProtocol)
+      ? parsed.targetProtocol
+      : fallback.targetProtocol;
+    const weeks = Array.isArray(parsed.weeks)
+      ? parsed.weeks
+          .map((week, index) => ({
+            weekIndex:
+              Number.isFinite(Number(week.weekIndex)) ? Number(week.weekIndex) : index,
+            protocolKey: PROTOCOL_ORDER.includes(week.protocolKey)
+              ? week.protocolKey
+              : fallback.weeks[index]?.protocolKey ?? fallback.targetProtocol,
+            dailyCalories: Number.isFinite(Number(week.dailyCalories))
+              ? Number(week.dailyCalories)
+              : null,
+            notes: typeof week.notes === 'string' ? week.notes : null,
+          }))
+          .slice(0, rampWeeks)
+      : fallback.weeks;
+    const rationale =
+      typeof parsed.rationale === 'string' && parsed.rationale.trim()
+        ? parsed.rationale.trim()
+        : 'Generated using your goal, pace, and recent adherence.';
+
+    return res.json({
+      targetProtocol: clampProtocolForMinEating(targetProtocol, minEatingHours),
+      weeks,
+      rationale,
     });
   } catch (error) {
     return res.status(500).json({ error: 'Server error', detail: String(error) });

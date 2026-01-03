@@ -19,13 +19,14 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  Appearance,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { enableScreens } from 'react-native-screens';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, Polyline } from 'react-native-svg';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { useFonts } from 'expo-font';
@@ -81,6 +82,7 @@ type HydrationMode = 'fasting' | 'eating' | 'both';
 type UnitSystem = 'metric' | 'imperial';
 type ActivityLevel = 'sedentary' | 'light' | 'moderate' | 'active' | 'veryActive';
 type CalorieGoalMode = 'lose' | 'maintain' | 'gain';
+type PlanPace = 'gentle' | 'moderate' | 'aggressive';
 
 type FoodEstimateResult = {
   items: ScanItem[];
@@ -134,6 +136,47 @@ type FridgeIdeasResult = {
   disclaimer?: string;
 };
 
+type AdaptivePlan = {
+  id: number;
+  goalMode: CalorieGoalMode;
+  targetPace: PlanPace;
+  startProtocol: string;
+  targetProtocol: string;
+  minEatingHours: number;
+  rampWeeks: number;
+  startDate: number;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type AdaptivePlanWeek = {
+  id: number;
+  plan_id: number;
+  week_index: number;
+  protocol_key: string;
+  daily_calories: number | null;
+  notes: string | null;
+};
+
+type PlanCheckIn = {
+  id: number;
+  plan_id: number;
+  week_index: number;
+  adherence_pct: number;
+  energy: number;
+  hunger: number;
+  conflicts: string | null;
+  suggestion_json: string | null;
+  created_at: number;
+};
+
+type PlanSuggestion = {
+  action: 'step_up' | 'hold' | 'step_down';
+  rationale: string;
+  nextProtocol?: string;
+};
+
 type SettingsState = {
   protocolKey: string;
   customFastingHours: number;
@@ -155,7 +198,7 @@ type TabParamList = {
   Insights: undefined;
   Eating: undefined;
   Smart: undefined;
-  History: undefined;
+  Plan: undefined;
   Settings: undefined;
 };
 
@@ -262,6 +305,35 @@ type Theme = {
   onRequestRescue: () => void;
   onClearRescue: () => void;
   onOpenRescue: () => void;
+  plan: AdaptivePlan | null;
+  planWeeks: AdaptivePlanWeek[];
+  planCheckins: PlanCheckIn[];
+  planBuilderVisible: boolean;
+  planGoalMode: CalorieGoalMode;
+  setPlanGoalMode: (value: CalorieGoalMode) => void;
+  planPace: PlanPace;
+  setPlanPace: (value: PlanPace) => void;
+  planStartProtocol: string;
+  setPlanStartProtocol: (value: string) => void;
+  planRampWeeks: number;
+  setPlanRampWeeks: (value: number) => void;
+  planMinEatingHours: number;
+  setPlanMinEatingHours: (value: number) => void;
+  planBusy: boolean;
+  onOpenPlanBuilder: () => void;
+  onClosePlanBuilder: () => void;
+  onCreatePlan: () => void;
+  checkinAdherence: string;
+  setCheckinAdherence: (value: string) => void;
+  checkinEnergy: number;
+  setCheckinEnergy: (value: number) => void;
+  checkinHunger: number;
+  setCheckinHunger: (value: number) => void;
+  checkinConflicts: string;
+  setCheckinConflicts: (value: string) => void;
+  checkinSuggestion: PlanSuggestion | null;
+  onSavePlanCheckin: () => void;
+  onApplyPlanSuggestion: () => void;
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
@@ -312,6 +384,20 @@ const CALORIE_GOALS: {
   { key: 'gain', label: 'Gain weight', adjustment: 300 },
 ];
 
+const PLAN_PACES: { key: PlanPace; label: string }[] = [
+  { key: 'gentle', label: 'Gentle' },
+  { key: 'moderate', label: 'Moderate' },
+  { key: 'aggressive', label: 'Aggressive' },
+];
+
+const PROTOCOL_ORDER = ['15:9', '16:8', '17:7', '18:6'];
+const PROTOCOL_EATING_HOURS: Record<string, number> = {
+  '15:9': 9,
+  '16:8': 8,
+  '17:7': 7,
+  '18:6': 6,
+};
+
 const FOOD_API_URL = process.env.EXPO_PUBLIC_FOOD_API_URL ?? '';
 const FOOD_API_KEY = process.env.EXPO_PUBLIC_FOOD_API_KEY ?? '';
 
@@ -334,6 +420,38 @@ const initDb = async (db: SQLite.SQLiteDatabase) => {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS adaptive_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_mode TEXT NOT NULL,
+      target_pace TEXT NOT NULL,
+      start_protocol TEXT NOT NULL,
+      target_protocol TEXT NOT NULL,
+      min_eating_hours INTEGER NOT NULL,
+      ramp_weeks INTEGER NOT NULL,
+      start_date INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS adaptive_plan_weeks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_id INTEGER NOT NULL,
+      week_index INTEGER NOT NULL,
+      protocol_key TEXT NOT NULL,
+      daily_calories INTEGER,
+      notes TEXT
+    );
+    CREATE TABLE IF NOT EXISTS adaptive_plan_checkins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_id INTEGER NOT NULL,
+      week_index INTEGER NOT NULL,
+      adherence_pct INTEGER NOT NULL,
+      energy INTEGER NOT NULL,
+      hunger INTEGER NOT NULL,
+      conflicts TEXT,
+      suggestion_json TEXT,
+      created_at INTEGER NOT NULL
     );`
   );
 };
@@ -473,21 +591,11 @@ const HeaderBar = ({
   subtitle: string;
 }) => (
   <View style={styles.headerRow}>
-    <View>
-      <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
-      <Text style={[styles.subtitle, { color: theme.muted }]}>{subtitle}</Text>
-    </View>
-    <View
-      style={[
-        styles.logoBadge,
-        { borderColor: theme.border, backgroundColor: theme.card },
-      ]}
-    >
-      <Image
-        source={require('./assets/adaptive-icon.png')}
-        style={styles.logoImage}
-        resizeMode="contain"
-      />
+    <View style={styles.headerContent}>
+      <Text style={[styles.title, styles.headerTitle, { color: theme.text }]}>{title}</Text>
+      <Text style={[styles.subtitle, styles.headerSubtitle, { color: theme.muted }]}>
+        {subtitle}
+      </Text>
     </View>
   </View>
 );
@@ -526,9 +634,12 @@ const HomeScreen = ({
       />
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>
-          {activeSession ? 'Current Fast' : 'Current Eating Window'}
-        </Text>
+        <View style={styles.sectionTitleRow}>
+          <Ionicons name="time-outline" size={16} color={theme.muted} />
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>
+            {activeSession ? 'Current Fast' : 'Current Eating Window'}
+          </Text>
+        </View>
         {activeSession ? (
           <>
             <Text style={[styles.timer, { color: theme.text }]}>
@@ -609,7 +720,7 @@ const HomeScreen = ({
               </>
             ) : null}
             <Text style={[styles.meta, { color: theme.muted }]}>
-              Calories in window: {currentWindowCalories} · Notes: {currentWindowNotes.length}
+              Calories in window: {currentWindowCalories} - Notes: {currentWindowNotes.length}
             </Text>
             <View style={styles.inlineRow}>
               <View style={[styles.infoBadge, { borderColor: theme.border, backgroundColor: theme.card }]}>
@@ -659,7 +770,10 @@ const HomeScreen = ({
       </View>
 
       <View style={[styles.card, getCardStyle(theme)]}>
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Craving rescue</Text>
+        <View style={styles.sectionTitleRow}>
+          <Ionicons name="alert-circle-outline" size={16} color={theme.muted} />
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Craving rescue</Text>
+        </View>
         <Text style={[styles.meta, { color: theme.muted }]}>
           Need a reset? Tap the panic button for quick, calming steps.
         </Text>
@@ -683,7 +797,7 @@ const HomeScreen = ({
   );
 };
 
-const InsightsScreen = ({
+const InsightsHistoryScreen = ({
   theme,
   totalWeekMs,
   dailyTotals,
@@ -694,106 +808,282 @@ const InsightsScreen = ({
   goalTuningBusy,
   onRequestGoalTuning,
   onApplyGoalTuning,
-}: ScreenProps) => (
-  <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-      <HeaderBar
-        theme={theme}
-        title="Insights"
-        subtitle="Weekly overview"
-      />
+  sessions,
+  now,
+  onOpenEdit,
+  eatingWindowsHistory,
+}: ScreenProps) => {
+  const [weeklyChartWidth, setWeeklyChartWidth] = useState(0);
+  const [caloriesChartWidth, setCaloriesChartWidth] = useState(0);
+  const [activeTab, setActiveTab] = useState<'insights' | 'history'>('insights');
+  const chartHeight = 120;
 
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Weekly Overview</Text>
-        <View style={styles.chart}>
-          {dailyTotals.map((day) => (
-            <View key={day.label} style={styles.chartCol}>
-              <View
-                style={[
-                  styles.chartBar,
-                  {
-                    backgroundColor: theme.accent,
-                    height: Math.max(6, (day.totalMs / maxDailyMs) * 120),
-                  },
-                ]}
-              />
-              <Text style={[styles.chartLabel, { color: theme.muted }]}>{day.label}</Text>
-            </View>
-          ))}
-        </View>
-        <Text style={[styles.meta, { color: theme.muted }]}> 
-          Total fasting this week: {formatDuration(totalWeekMs)}
-        </Text>
-      </View>
+  const movingAverage = (values: number[], windowSize = 3) =>
+    values.map((_, index) => {
+      const halfWindow = Math.floor(windowSize / 2);
+      let sum = 0;
+      let count = 0;
+      for (let i = index - halfWindow; i <= index + halfWindow; i += 1) {
+        if (i >= 0 && i < values.length) {
+          sum += values[i];
+          count += 1;
+        }
+      }
+      return count > 0 ? sum / count : values[index];
+    });
 
-        <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Daily Calories</Text>
-          <View style={styles.chart}>
-            {dailyCaloriesTotals.map((day) => (
-              <View key={day.label} style={styles.chartCol}>
-              <View
-                style={[
-                  styles.chartBar,
-                  {
-                    backgroundColor: theme.accent,
-                    height: Math.max(
-                      6,
-                      (day.totalCalories / Math.max(maxDailyCalories, 1)) * 120
-                    ),
-                  },
-                ]}
-              />
-              <Text style={[styles.chartLabel, { color: theme.muted }]}>{day.label}</Text>
-              <Text style={[styles.microLabel, { color: theme.muted }]}>
-                {day.totalCalories}
-              </Text>
-            </View>
-            ))}
-          </View>
-        </View>
+  const buildTrendPoints = (
+    values: number[],
+    maxValue: number,
+    width: number,
+    height: number
+  ) => {
+    if (!width || maxValue <= 0 || values.length === 0) return '';
+    const colWidth = width / values.length;
+    return values
+      .map((value, index) => {
+        const x = colWidth * (index + 0.5);
+        const y = height - (value / maxValue) * height;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+  };
 
-        <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Goal tuning</Text>
-          <Text style={[styles.meta, { color: theme.muted }]}>
-            Get a recommended fasting window based on your recent patterns.
-          </Text>
-          <View style={styles.row}>
+  const weeklyTrendValues = movingAverage(
+    dailyTotals.map((day) => day.totalMs)
+  );
+  const weeklyTrendPoints = buildTrendPoints(
+    weeklyTrendValues,
+    Math.max(maxDailyMs, 1),
+    weeklyChartWidth,
+    chartHeight
+  );
+  const calorieTrendValues = movingAverage(
+    dailyCaloriesTotals.map((day) => day.totalCalories)
+  );
+  const calorieTrendPoints = buildTrendPoints(
+    calorieTrendValues,
+    Math.max(maxDailyCalories, 1),
+    caloriesChartWidth,
+    chartHeight
+  );
+
+  return (
+    <ScreenShell theme={theme}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <HeaderBar
+          theme={theme}
+          title="Insights"
+          subtitle={activeTab === 'insights' ? 'Weekly overview' : 'Session history'}
+        />
+
+        <View style={styles.segmentedRow}>
+          {(['insights', 'history'] as const).map((option) => (
             <Pressable
+              key={option}
               style={[
-                styles.primaryButton,
-                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: goalTuningBusy ? 0.7 : 1 },
+                styles.segmentedButton,
+                {
+                  backgroundColor: option === activeTab ? theme.accent : theme.bg,
+                  borderColor: theme.border,
+                },
               ]}
-              onPress={onRequestGoalTuning}
-              disabled={goalTuningBusy}
+              onPress={() => setActiveTab(option)}
             >
-              <Text style={styles.primaryButtonText}>
-                {goalTuningBusy ? 'Analyzing...' : 'Get recommendation'}
+              <Text
+                style={[
+                  styles.segmentedText,
+                  { color: option === activeTab ? '#111' : theme.text },
+                ]}
+              >
+                {option === 'insights' ? 'Insights' : 'History'}
               </Text>
             </Pressable>
-            {goalTuningResult ? (
-              <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.border }]}
-                onPress={onApplyGoalTuning}
+          ))}
+        </View>
+
+        {activeTab === 'insights' ? (
+          <>
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="stats-chart-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Weekly Overview</Text>
+              </View>
+              <View
+                style={styles.chartWrap}
+                onLayout={(event) => setWeeklyChartWidth(event.nativeEvent.layout.width)}
               >
-                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Apply</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {goalTuningResult ? (
-            <View style={styles.goalResult}>
-              <Text style={[styles.metaStrong, { color: theme.text }]}>
-                Recommended: {goalTuningResult.recommendedProtocol}
+                <View style={[styles.chartBars, { height: chartHeight }]}>
+                  {dailyTotals.map((day) => (
+                    <View key={day.label} style={styles.chartCol}>
+                      <View
+                        style={[
+                          styles.chartBar,
+                          {
+                            backgroundColor: theme.accent,
+                            height: Math.max(6, (day.totalMs / maxDailyMs) * chartHeight),
+                          },
+                        ]}
+                      />
+                    </View>
+                  ))}
+                  {weeklyTrendPoints ? (
+                    <Svg style={styles.chartOverlay} width={weeklyChartWidth} height={chartHeight}>
+                      <Polyline
+                        points={weeklyTrendPoints}
+                        fill="none"
+                        stroke={theme.accent}
+                        strokeWidth={2}
+                        strokeOpacity={0.35}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Svg>
+                  ) : null}
+                </View>
+                <View style={styles.chartLabels}>
+                  {dailyTotals.map((day) => (
+                    <View key={`${day.label}-label`} style={styles.chartLabelCol}>
+                      <Text style={[styles.chartLabel, { color: theme.muted }]}>{day.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Total fasting this week: {formatDuration(totalWeekMs)}
               </Text>
-              <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.rationale}</Text>
-              {goalTuningResult.note ? (
-                <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.note}</Text>
+            </View>
+
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="flame-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Daily Calories</Text>
+              </View>
+              <View
+                style={styles.chartWrap}
+                onLayout={(event) => setCaloriesChartWidth(event.nativeEvent.layout.width)}
+              >
+                <View style={[styles.chartBars, { height: chartHeight }]}>
+                  {dailyCaloriesTotals.map((day) => (
+                    <View key={day.label} style={styles.chartCol}>
+                      <View
+                        style={[
+                          styles.chartBar,
+                          {
+                            backgroundColor: theme.accent,
+                            height: Math.max(
+                              6,
+                              (day.totalCalories / Math.max(maxDailyCalories, 1)) * chartHeight
+                            ),
+                          },
+                        ]}
+                      />
+                    </View>
+                  ))}
+                  {calorieTrendPoints ? (
+                    <Svg style={styles.chartOverlay} width={caloriesChartWidth} height={chartHeight}>
+                      <Polyline
+                        points={calorieTrendPoints}
+                        fill="none"
+                        stroke={theme.accent}
+                        strokeWidth={2}
+                        strokeOpacity={0.35}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Svg>
+                  ) : null}
+                </View>
+                <View style={styles.chartLabels}>
+                  {dailyCaloriesTotals.map((day) => (
+                    <View key={`${day.label}-label`} style={styles.chartLabelCol}>
+                      <Text style={[styles.chartLabel, { color: theme.muted }]}>{day.label}</Text>
+                      <Text style={[styles.microLabel, { color: theme.muted }]}>
+                        {day.totalCalories}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </View>
+
+          </>
+        ) : (
+          <>
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="calendar-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Sessions</Text>
+              </View>
+              {sessions.map((session) => {
+                const endTs = session.end_time ?? now;
+                return (
+                  <Pressable
+                    key={session.id}
+                    style={styles.historyRow}
+                    onPress={() => onOpenEdit(session)}
+                  >
+                    <View>
+                      <Text style={[styles.noteText, { color: theme.text }]}> 
+                        {formatDate(session.start_time)} - {formatDuration(endTs - session.start_time)}
+                      </Text>
+                      <Text style={[styles.meta, { color: theme.muted }]}> 
+                        {formatTime(session.start_time)} to{' '}
+                        {session.end_time ? formatTime(session.end_time) : 'Active'}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+              {sessions.length === 0 ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>No sessions yet.</Text>
               ) : null}
             </View>
-          ) : null}
-        </View>
+
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="time-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating windows</Text>
+              </View>
+              {eatingWindowsHistory.length === 0 ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  No completed eating windows yet.
+                </Text>
+              ) : null}
+              {eatingWindowsHistory.map((window, index) => (
+                <View key={`${window.start}-${index}`} style={styles.historyRow}>
+                  <Text style={[styles.noteText, { color: theme.text }]}>
+                    {formatDate(window.start)} - {formatDate(window.end)}
+                  </Text>
+                  <Text style={[styles.meta, { color: theme.muted }]}>
+                    Total calories: {window.totalCalories} - {window.noteCount} notes
+                  </Text>
+                  {window.notes.length > 0 ? (
+                    <View style={styles.historyNotes}>
+                      {window.notes.map((note) => (
+                        <View key={note.id} style={styles.historyNoteRow}>
+                          {note.thumbnail_path ? (
+                            <Image source={{ uri: note.thumbnail_path }} style={styles.historyThumb} />
+                          ) : null}
+                          <Text style={[styles.historyNoteText, { color: theme.text }]}>
+                            - {note.text}
+                            {note.calories !== null && note.calories !== undefined
+                              ? ` (${note.calories} kcal)`
+                              : ''}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </>
+        )}
       </ScrollView>
     </ScreenShell>
   );
+};
 
 const EatingScreen = ({
   theme,
@@ -818,6 +1108,7 @@ const EatingScreen = ({
   onRequestAutopilot,
   onClearAutopilot,
 }: ScreenProps) => {
+  const [showWindowNotes, setShowWindowNotes] = useState(true);
   return (
   <ScreenShell theme={theme}>
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -828,9 +1119,64 @@ const EatingScreen = ({
       />
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Current window</Text>
+        <View style={styles.sectionTitleRow}>
+          <Ionicons name="sparkles-outline" size={16} color={theme.muted} />
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating window autopilot</Text>
+        </View>
+        <Text style={[styles.meta, { color: theme.muted }]}>
+          Plan your eating window with a timed mini-menu.
+        </Text>
+        <View style={styles.row}>
+          <Pressable
+            style={[
+              styles.primaryButton,
+              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
+            ]}
+            onPress={onRequestAutopilot}
+            disabled={autopilotBusy}
+          >
+            <Text style={styles.primaryButtonText}>
+              {autopilotBusy ? 'Planning...' : 'Build plan'}
+            </Text>
+          </Pressable>
+          {autopilotResult ? (
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onClearAutopilot}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {autopilotResult ? (
+          <View style={styles.smartResult}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>
+              Total target: {autopilotResult.totalCalories} kcal
+            </Text>
+            {autopilotResult.items.map((item, index) => (
+              <View key={`${item.time}-${index}`} style={styles.smartMeal}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  {item.time} - {item.title} ({item.calories} kcal)
+                </Text>
+                {item.notes ? (
+                  <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
+                ) : null}
+              </View>
+            ))}
+            {autopilotResult.disclaimer ? (
+              <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <View style={styles.sectionTitleRow}>
+          <Ionicons name="restaurant-outline" size={16} color={theme.muted} />
+          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Current window</Text>
+        </View>
         <Text style={[styles.meta, { color: theme.text }]}> 
-          {currentWindowLabel} · {currentWindowCalories} kcal
+          {currentWindowLabel} - {currentWindowCalories} kcal
         </Text>
         <Text style={[styles.meta, { color: theme.muted }]}> 
           Daily calories: {todayCalories}
@@ -901,96 +1247,477 @@ const EatingScreen = ({
         </View>
 
         <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating window autopilot</Text>
-          <Text style={[styles.meta, { color: theme.muted }]}>
-            Plan your eating window with a timed mini-menu.
-          </Text>
-          <View style={styles.row}>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
-              ]}
-              onPress={onRequestAutopilot}
-              disabled={autopilotBusy}
-            >
-              <Text style={styles.primaryButtonText}>
-                {autopilotBusy ? 'Planning...' : 'Build plan'}
-              </Text>
-            </Pressable>
-            {autopilotResult ? (
-              <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.border }]}
-                onPress={onClearAutopilot}
-              >
-                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {autopilotResult ? (
-            <View style={styles.smartResult}>
-              <Text style={[styles.metaStrong, { color: theme.text }]}>
-                Total target: {autopilotResult.totalCalories} kcal
-              </Text>
-              {autopilotResult.items.map((item, index) => (
-                <View key={`${item.time}-${index}`} style={styles.smartMeal}>
-                  <Text style={[styles.metaStrong, { color: theme.text }]}>
-                    {item.time} - {item.title} ({item.calories} kcal)
-                  </Text>
-                  {item.notes ? (
-                    <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
-                  ) : null}
-                </View>
-              ))}
-              {autopilotResult.disclaimer ? (
-                <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
-
-        <View style={[styles.card, getCardStyle(theme)]}> 
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Window notes</Text>
-        {currentWindowNotes.length === 0 ? (
-          <Text style={[styles.meta, { color: theme.muted }]}>
-            No notes in this window yet.
-          </Text>
-        ) : null}
-        {currentWindowNotes.map((note) => (
-          <View key={note.id} style={[styles.noteItem, { borderColor: theme.border }]}>
-            <View style={styles.noteHeaderRow}>
-              <View style={styles.noteContent}>
-                {note.thumbnail_path ? (
-                  <Image source={{ uri: note.thumbnail_path }} style={styles.noteThumb} />
-                ) : null}
-                <Text style={[styles.noteText, { color: theme.text }]}>{note.text}</Text>
-                <Text style={[styles.meta, { color: theme.muted }]}> 
-                  {formatTime(note.timestamp)}
-                  {note.calories !== null && note.calories !== undefined
-                    ? ` - ${note.calories} kcal`
-                    : ''}
+          <Pressable
+            style={styles.sectionHeaderRow}
+            onPress={() => setShowWindowNotes((prev) => !prev)}
+          >
+            <View style={styles.sectionHeaderLeft}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="document-text-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                  Window notes
                 </Text>
               </View>
-              <View style={styles.noteActions}>
-                <Pressable
-                  style={[styles.iconButton, { borderColor: theme.border }]}
-                  onPress={() => onOpenEditNote(note)}
-                >
-                  <Ionicons name="create-outline" size={16} color={theme.muted} />
-                </Pressable>
-                <Pressable
-                  style={[styles.iconButton, { borderColor: theme.border }]}
-                  onPress={() => onDeleteNote(note.id)}
-                >
-                  <Ionicons name="trash-outline" size={16} color={theme.muted} />
-                </Pressable>
-              </View>
+              <Text style={[styles.sectionSubtitle, { color: theme.muted }]}>
+                {currentWindowNotes.length} notes
+              </Text>
             </View>
-          </View>
-        ))}
+            <Ionicons
+              name={showWindowNotes ? 'chevron-up' : 'chevron-down'}
+              size={18}
+              color={theme.muted}
+            />
+          </Pressable>
+        {showWindowNotes ? (
+          <>
+            {currentWindowNotes.length === 0 ? (
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                No notes in this window yet.
+              </Text>
+            ) : null}
+            {currentWindowNotes.map((note) => (
+              <View key={note.id} style={[styles.noteItem, { borderColor: theme.border }]}>
+                <View style={styles.noteHeaderRow}>
+                  <View style={styles.noteContent}>
+                    {note.thumbnail_path ? (
+                      <Image source={{ uri: note.thumbnail_path }} style={styles.noteThumb} />
+                    ) : null}
+                    <Text style={[styles.noteText, { color: theme.text }]}>{note.text}</Text>
+                    <Text style={[styles.meta, { color: theme.muted }]}> 
+                      {formatTime(note.timestamp)}
+                      {note.calories !== null && note.calories !== undefined
+                        ? ` - ${note.calories} kcal`
+                        : ''}
+                    </Text>
+                  </View>
+                  <View style={styles.noteActions}>
+                    <Pressable
+                      style={[styles.iconButton, { borderColor: theme.border }]}
+                      onPress={() => onOpenEditNote(note)}
+                    >
+                      <Ionicons name="create-outline" size={16} color={theme.muted} />
+                    </Pressable>
+                    <Pressable
+                      style={[styles.iconButton, { borderColor: theme.border }]}
+                      onPress={() => onDeleteNote(note.id)}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={theme.muted} />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ))}
+          </>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Notes hidden.</Text>
+        )}
       </View>
     </ScrollView>
   </ScreenShell>
+  );
+};
+
+const PlanScreen = ({
+  theme,
+  now,
+  plan,
+  planWeeks,
+  planCheckins,
+  planBuilderVisible,
+  planGoalMode,
+  setPlanGoalMode,
+  planPace,
+  setPlanPace,
+  planStartProtocol,
+  setPlanStartProtocol,
+  planRampWeeks,
+  setPlanRampWeeks,
+  planMinEatingHours,
+  setPlanMinEatingHours,
+  planBusy,
+  onOpenPlanBuilder,
+  onClosePlanBuilder,
+  onCreatePlan,
+  checkinAdherence,
+  setCheckinAdherence,
+  checkinEnergy,
+  setCheckinEnergy,
+  checkinHunger,
+  setCheckinHunger,
+  checkinConflicts,
+  setCheckinConflicts,
+  checkinSuggestion,
+  onSavePlanCheckin,
+  onApplyPlanSuggestion,
+}: ScreenProps) => {
+  const currentWeekIndex = plan
+    ? Math.max(
+        0,
+        Math.min(
+          Math.floor((now - plan.startDate) / (7 * 24 * 3600 * 1000)),
+          plan.rampWeeks - 1
+        )
+      )
+    : 0;
+  const recentSuggestion = (() => {
+    if (checkinSuggestion) return checkinSuggestion;
+    if (!planCheckins[0]?.suggestion_json) return null;
+    try {
+      return JSON.parse(planCheckins[0].suggestion_json || '{}') as PlanSuggestion;
+    } catch (error) {
+      return null;
+    }
+  })();
+
+  return (
+    <ScreenShell theme={theme}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <HeaderBar
+          theme={theme}
+          title="Adaptive Plan"
+          subtitle="Ramp your fasting and calories"
+        />
+
+        {!plan ? (
+          <View style={[styles.card, getCardStyle(theme)]}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="map-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, { color: theme.muted }]}>Start a plan</Text>
+            </View>
+            <Text style={[styles.meta, { color: theme.muted }]}>
+              Build a gradual plan from an easy start to a stricter target.
+            </Text>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.primaryButton, { backgroundColor: theme.accent, shadowColor: theme.shadow }]}
+                onPress={onOpenPlanBuilder}
+              >
+                <Text style={styles.primaryButtonText}>Create plan</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <>
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="compass-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Plan overview</Text>
+              </View>
+              <Text style={[styles.meta, { color: theme.text }]}>
+                Goal: {CALORIE_GOALS.find((goal) => goal.key === plan.goalMode)?.label ?? plan.goalMode}
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Pace: {PLAN_PACES.find((pace) => pace.key === plan.targetPace)?.label ?? plan.targetPace}
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                {plan.startProtocol} → {plan.targetProtocol} · Min eating {plan.minEatingHours}h
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Current week: {currentWeekIndex + 1} of {plan.rampWeeks}
+              </Text>
+              <View style={styles.row}>
+                <Pressable
+                  style={[styles.secondaryButton, { borderColor: theme.border }]}
+                  onPress={onOpenPlanBuilder}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Edit plan</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="calendar-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Plan timeline</Text>
+              </View>
+              {planWeeks.map((week) => {
+                const isCurrent = week.week_index === currentWeekIndex;
+                return (
+                  <View
+                    key={week.id}
+                    style={[
+                      styles.planWeekRow,
+                      { borderColor: theme.border },
+                      isCurrent ? { backgroundColor: theme.bgAlt } : null,
+                    ]}
+                  >
+                    <View style={styles.planWeekHeader}>
+                      <Text style={[styles.metaStrong, { color: theme.text }]}>
+                        Week {week.week_index + 1}
+                      </Text>
+                      <Text style={[styles.meta, { color: theme.muted }]}>
+                        {week.protocol_key}
+                      </Text>
+                    </View>
+                    <Text style={[styles.meta, { color: theme.muted }]}>
+                      Daily calories: {week.daily_calories && week.daily_calories > 0 ? week.daily_calories : 'Not set'}
+                    </Text>
+                    {week.notes ? (
+                      <Text style={[styles.meta, { color: theme.muted }]}>{week.notes}</Text>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="clipboard-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Weekly check-in</Text>
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Log how the week felt to get a recommended adjustment.
+              </Text>
+              <TextInput
+                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                value={checkinAdherence}
+                onChangeText={setCheckinAdherence}
+                keyboardType="numeric"
+                placeholder="Adherence % (0-100)"
+                placeholderTextColor={theme.muted}
+              />
+              <Text style={[styles.meta, { color: theme.muted }]}>Energy</Text>
+              <View style={styles.pillRow}>
+                {[1, 2, 3, 4, 5].map((value) => (
+                  <Pressable
+                    key={`energy-${value}`}
+                    style={[
+                      styles.pill,
+                      {
+                        backgroundColor: checkinEnergy === value ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                    onPress={() => setCheckinEnergy(value)}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: checkinEnergy === value ? '#111' : theme.text },
+                      ]}
+                    >
+                      {value}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>Hunger</Text>
+              <View style={styles.pillRow}>
+                {[1, 2, 3, 4, 5].map((value) => (
+                  <Pressable
+                    key={`hunger-${value}`}
+                    style={[
+                      styles.pill,
+                      {
+                        backgroundColor: checkinHunger === value ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                    onPress={() => setCheckinHunger(value)}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: checkinHunger === value ? '#111' : theme.text },
+                      ]}
+                    >
+                      {value}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <TextInput
+                style={[styles.input, styles.inputTall, { color: theme.text, borderColor: theme.border }]}
+                value={checkinConflicts}
+                onChangeText={setCheckinConflicts}
+                placeholder="Conflicts or notes (optional)"
+                placeholderTextColor={theme.muted}
+                multiline
+              />
+              <View style={styles.row}>
+                <Pressable
+                  style={[styles.primaryButton, { backgroundColor: theme.accent, shadowColor: theme.shadow }]}
+                  onPress={onSavePlanCheckin}
+                >
+                  <Text style={styles.primaryButtonText}>Save check-in</Text>
+                </Pressable>
+              </View>
+              {recentSuggestion ? (
+                <View style={styles.smartResult}>
+                  <Text style={[styles.metaStrong, { color: theme.text }]}>
+                    Recommendation: {recentSuggestion.action.replace('_', ' ')}
+                  </Text>
+                  <Text style={[styles.meta, { color: theme.muted }]}>{recentSuggestion.rationale}</Text>
+                  {recentSuggestion.nextProtocol ? (
+                    <Text style={[styles.meta, { color: theme.muted }]}>
+                      Suggested protocol: {recentSuggestion.nextProtocol}
+                    </Text>
+                  ) : null}
+                  {recentSuggestion.action !== 'hold' ? (
+                    <Pressable
+                      style={[styles.secondaryButton, { borderColor: theme.border }]}
+                      onPress={onApplyPlanSuggestion}
+                    >
+                      <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                        Apply adjustment
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          </>
+        )}
+      </ScrollView>
+
+      <Modal visible={planBuilderVisible} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={onClosePlanBuilder}>
+          <KeyboardAvoidingView
+            style={styles.modalAvoid}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <Pressable style={[styles.modalContent, getCardStyle(theme)]} onPress={() => {}}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                Build your plan
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>Goal</Text>
+              <View style={styles.pillRow}>
+                {CALORIE_GOALS.map((goal) => (
+                  <Pressable
+                    key={goal.key}
+                    style={[
+                      styles.pill,
+                      {
+                        backgroundColor: planGoalMode === goal.key ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                    onPress={() => setPlanGoalMode(goal.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: planGoalMode === goal.key ? '#111' : theme.text },
+                      ]}
+                    >
+                      {goal.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>Pace</Text>
+              <View style={styles.pillRow}>
+                {PLAN_PACES.map((pace) => (
+                  <Pressable
+                    key={pace.key}
+                    style={[
+                      styles.pill,
+                      {
+                        backgroundColor: planPace === pace.key ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                    onPress={() => setPlanPace(pace.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: planPace === pace.key ? '#111' : theme.text },
+                      ]}
+                    >
+                      {pace.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>Start protocol</Text>
+              <View style={styles.pillRow}>
+                {PROTOCOLS.filter((protocol) => protocol.key !== 'custom').map((protocol) => (
+                  <Pressable
+                    key={protocol.key}
+                    style={[
+                      styles.pill,
+                      {
+                        backgroundColor: planStartProtocol === protocol.key ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                    onPress={() => setPlanStartProtocol(protocol.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: planStartProtocol === protocol.key ? '#111' : theme.text },
+                      ]}
+                    >
+                      {protocol.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>Ramp length (weeks)</Text>
+              <View style={styles.pillRow}>
+                {[3, 4, 6].map((weeks) => (
+                  <Pressable
+                    key={`weeks-${weeks}`}
+                    style={[
+                      styles.pill,
+                      {
+                        backgroundColor: planRampWeeks === weeks ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                    onPress={() => setPlanRampWeeks(weeks)}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: planRampWeeks === weeks ? '#111' : theme.text },
+                      ]}
+                    >
+                      {weeks}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>Minimum eating hours</Text>
+              <TextInput
+                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                value={String(planMinEatingHours)}
+                onChangeText={(value) =>
+                  setPlanMinEatingHours(Math.max(6, Math.min(12, Number(value) || 6)))
+                }
+                keyboardType="numeric"
+                placeholder="Minimum eating hours"
+                placeholderTextColor={theme.muted}
+              />
+              <View style={styles.row}>
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: planBusy ? 0.7 : 1 },
+                  ]}
+                  onPress={onCreatePlan}
+                  disabled={planBusy}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {planBusy ? 'Saving...' : 'Save plan'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.secondaryButton, { borderColor: theme.border }]}
+                  onPress={onClosePlanBuilder}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                    Cancel
+                  </Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
+    </ScreenShell>
   );
 };
 
@@ -1018,7 +1745,13 @@ const SmartToolsScreen = ({
   fridgeBusy,
   onScanFridge,
   onClearFridgeIdeas,
+  goalTuningResult,
+  goalTuningBusy,
+  onRequestGoalTuning,
+  onApplyGoalTuning,
 }: ScreenProps) => {
+  const [showQuickTools, setShowQuickTools] = useState(true);
+  const [showPhotoTools, setShowPhotoTools] = useState(true);
   const suggestedTarget =
     dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
 
@@ -1031,178 +1764,284 @@ const SmartToolsScreen = ({
           subtitle="AI-powered helpers"
         />
 
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
-        <TextInput
-            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-            placeholder="Example: Turkey wrap and a latte"
-            placeholderTextColor={theme.muted}
-            value={ifEatText}
-            onChangeText={setIfEatText}
-          />
-          <View style={styles.row}>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
-              ]}
-              onPress={onEstimateFood}
-              disabled={ifEatBusy}
-            >
-              <Text style={styles.primaryButtonText}>
-                {ifEatBusy ? 'Estimating...' : 'Estimate'}
-              </Text>
-            </Pressable>
-            {ifEatResult ? (
-              <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.border }]}
-                onPress={onClearFoodEstimate}
-              >
-                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {ifEatResult ? (
-            <View style={styles.smartResult}>
-              <Text style={[styles.metaStrong, { color: theme.text }]}>
-                Estimated total: {ifEatResult.totalCalories} kcal
-              </Text>
-              {ifEatResult.items.map((item, index) => (
-                <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                  - {item.name}
-                  {item.calories !== null && item.calories !== undefined
-                    ? ` (${item.calories} kcal)`
-                    : ''}
-                </Text>
-              ))}
-              {ifEatResult.disclaimer ? (
-                <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
-              ) : null}
-            </View>
-        ) : null}
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Portion coach</Text>
-          <TextInput
-            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-            placeholder="Example: Bowl of pasta with tomato sauce"
-            placeholderTextColor={theme.muted}
-            value={portionText}
-            onChangeText={setPortionText}
-          />
-          <TextInput
-            style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-            placeholder={suggestedTarget ? `Target kcal (e.g., ${suggestedTarget})` : 'Target kcal (optional)'}
-            placeholderTextColor={theme.muted}
-            value={portionTarget}
-            onChangeText={setPortionTarget}
-            keyboardType="numeric"
-          />
-          <View style={styles.row}>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: portionBusy ? 0.7 : 1 },
-              ]}
-              onPress={onPortionCoach}
-              disabled={portionBusy}
-            >
-              <Text style={styles.primaryButtonText}>
-                {portionBusy ? 'Coaching...' : 'Get tips'}
-              </Text>
-            </Pressable>
-            {portionResult ? (
-              <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.border }]}
-                onPress={onClearPortionCoach}
-              >
-                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        {portionResult ? (
-          <View style={styles.smartResult}>
-            <Text style={[styles.metaStrong, { color: theme.text }]}>
-              Estimated: {portionResult.estimatedCalories} kcal
-              {portionResult.targetCalories !== null && portionResult.targetCalories > 0
-                ? ` (Target ${portionResult.targetCalories})`
-                : ''}
-            </Text>
-            <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
-            {portionResult.adjustments.map((tip, index) => (
-              <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                - {tip}
-              </Text>
-            ))}
-          </View>
-        ) : null}
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Fridge ideas</Text>
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Snap your fridge and get meal ideas under a calorie limit.
-        </Text>
-        <TextInput
-          style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-          placeholder="Limit kcal (optional, default 400)"
-          placeholderTextColor={theme.muted}
-          value={fridgeLimit}
-          onChangeText={setFridgeLimit}
-          keyboardType="numeric"
-        />
-        <View style={styles.row}>
+        <View style={[styles.card, getCardStyle(theme)]}>
           <Pressable
-            style={[
-              styles.primaryButton,
-              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: fridgeBusy ? 0.7 : 1 },
-            ]}
-            onPress={onScanFridge}
-            disabled={fridgeBusy}
+            style={styles.sectionHeaderRow}
+            onPress={() => setShowQuickTools((prev) => !prev)}
           >
-            <Text style={styles.primaryButtonText}>
-              {fridgeBusy ? 'Scanning...' : 'Scan fridge'}
-            </Text>
-          </Pressable>
-          {fridgeIdeas ? (
-            <Pressable
-              style={[styles.secondaryButton, { borderColor: theme.border }]}
-              onPress={onClearFridgeIdeas}
-            >
-              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {fridgeIdeas ? (
-          <View style={styles.smartResult}>
-            {fridgeIdeas.items?.length ? (
-              <Text style={[styles.meta, { color: theme.muted }]}>
-                Detected: {fridgeIdeas.items.join(', ')}
+            <View style={styles.sectionHeaderLeft}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="flash-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                  Quick estimates
+                </Text>
+              </View>
+              <Text style={[styles.sectionSubtitle, { color: theme.muted }]}>
+                If I eat this + portion coach
               </Text>
-            ) : null}
-            {fridgeIdeas.meals.map((meal, index) => (
-              <View key={`${meal.title}-${index}`} style={styles.smartMeal}>
-                <Text style={[styles.metaStrong, { color: theme.text }]}>
-                  {meal.title} · {meal.calories} kcal
-                </Text>
-                <Text style={[styles.meta, { color: theme.muted }]}>
-                  {meal.ingredients.join(', ')}
-                </Text>
-                {meal.notes ? (
-                  <Text style={[styles.meta, { color: theme.muted }]}>{meal.notes}</Text>
+            </View>
+            <Ionicons
+              name={showQuickTools ? 'chevron-up' : 'chevron-down'}
+              size={18}
+              color={theme.muted}
+            />
+          </Pressable>
+          {showQuickTools ? (
+            <>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="restaurant-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
+              </View>
+              <TextInput
+                style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+                placeholder="Example: Turkey wrap and a latte"
+                placeholderTextColor={theme.muted}
+                value={ifEatText}
+                onChangeText={setIfEatText}
+              />
+              <View style={styles.row}>
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
+                  ]}
+                  onPress={onEstimateFood}
+                  disabled={ifEatBusy}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {ifEatBusy ? 'Estimating...' : 'Estimate'}
+                  </Text>
+                </Pressable>
+                {ifEatResult ? (
+                  <Pressable
+                    style={[styles.secondaryButton, { borderColor: theme.border }]}
+                    onPress={onClearFoodEstimate}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+                  </Pressable>
                 ) : null}
               </View>
-            ))}
-            {fridgeIdeas.disclaimer ? (
-              <Text style={[styles.meta, { color: theme.muted }]}>{fridgeIdeas.disclaimer}</Text>
+              {ifEatResult ? (
+                <View style={styles.smartResult}>
+                  <Text style={[styles.metaStrong, { color: theme.text }]}>
+                    Estimated total: {ifEatResult.totalCalories} kcal
+                  </Text>
+                  {ifEatResult.items.map((item, index) => (
+                    <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                      - {item.name}
+                      {item.calories !== null && item.calories !== undefined
+                        ? ` (${item.calories} kcal)`
+                        : ''}
+                    </Text>
+                  ))}
+                  {ifEatResult.disclaimer ? (
+                    <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
+                  ) : null}
+                </View>
+              ) : null}
+
+              <View style={[styles.smartDivider, { backgroundColor: theme.border }]} />
+
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="scale-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Portion coach</Text>
+              </View>
+              <TextInput
+                style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+                placeholder="Example: Bowl of pasta with tomato sauce"
+                placeholderTextColor={theme.muted}
+                value={portionText}
+                onChangeText={setPortionText}
+              />
+              <TextInput
+                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                placeholder={suggestedTarget ? `Target kcal (e.g., ${suggestedTarget})` : 'Target kcal (optional)'}
+                placeholderTextColor={theme.muted}
+                value={portionTarget}
+                onChangeText={setPortionTarget}
+                keyboardType="numeric"
+              />
+              <View style={styles.row}>
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: portionBusy ? 0.7 : 1 },
+                  ]}
+                  onPress={onPortionCoach}
+                  disabled={portionBusy}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {portionBusy ? 'Coaching...' : 'Get tips'}
+                  </Text>
+                </Pressable>
+                {portionResult ? (
+                  <Pressable
+                    style={[styles.secondaryButton, { borderColor: theme.border }]}
+                    onPress={onClearPortionCoach}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              {portionResult ? (
+                <View style={styles.smartResult}>
+                  <Text style={[styles.metaStrong, { color: theme.text }]}>
+                    Estimated: {portionResult.estimatedCalories} kcal
+                    {portionResult.targetCalories !== null && portionResult.targetCalories > 0
+                      ? ` (Target ${portionResult.targetCalories})`
+                      : ''}
+                  </Text>
+                  <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
+                  {portionResult.adjustments.map((tip, index) => (
+                    <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                      - {tip}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+          )}
+        </View>
+
+        <View style={[styles.card, getCardStyle(theme)]}>
+          <Pressable
+            style={styles.sectionHeaderRow}
+            onPress={() => setShowPhotoTools((prev) => !prev)}
+          >
+            <View style={styles.sectionHeaderLeft}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="camera-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                  Photo tools
+                </Text>
+              </View>
+              <Text style={[styles.sectionSubtitle, { color: theme.muted }]}>
+                Fridge ideas
+              </Text>
+            </View>
+            <Ionicons
+              name={showPhotoTools ? 'chevron-up' : 'chevron-down'}
+              size={18}
+              color={theme.muted}
+            />
+          </Pressable>
+          {showPhotoTools ? (
+            <>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="leaf-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Fridge ideas</Text>
+              </View>
+              <Text style={[styles.meta, { color: theme.muted }]}>
+                Snap your fridge and get meal ideas under a calorie limit.
+              </Text>
+              <TextInput
+                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                placeholder="Limit kcal (optional, default 400)"
+                placeholderTextColor={theme.muted}
+                value={fridgeLimit}
+                onChangeText={setFridgeLimit}
+                keyboardType="numeric"
+              />
+              <View style={styles.row}>
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: fridgeBusy ? 0.7 : 1 },
+                  ]}
+                  onPress={onScanFridge}
+                  disabled={fridgeBusy}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {fridgeBusy ? 'Scanning...' : 'Scan fridge'}
+                  </Text>
+                </Pressable>
+                {fridgeIdeas ? (
+                  <Pressable
+                    style={[styles.secondaryButton, { borderColor: theme.border }]}
+                    onPress={onClearFridgeIdeas}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              {fridgeIdeas ? (
+                <View style={styles.smartResult}>
+                  {fridgeIdeas.items?.length ? (
+                    <Text style={[styles.meta, { color: theme.muted }]}>
+                      Detected: {fridgeIdeas.items.join(', ')}
+                    </Text>
+                  ) : null}
+                  {fridgeIdeas.meals.map((meal, index) => (
+                    <View key={`${meal.title}-${index}`} style={styles.smartMeal}>
+                      <Text style={[styles.metaStrong, { color: theme.text }]}>
+                        {meal.title} - {meal.calories} kcal
+                      </Text>
+                      <Text style={[styles.meta, { color: theme.muted }]}>
+                        {meal.ingredients.join(', ')}
+                      </Text>
+                      {meal.notes ? (
+                        <Text style={[styles.meta, { color: theme.muted }]}>{meal.notes}</Text>
+                      ) : null}
+                    </View>
+                  ))}
+                  {fridgeIdeas.disclaimer ? (
+                    <Text style={[styles.meta, { color: theme.muted }]}>{fridgeIdeas.disclaimer}</Text>
+                  ) : null}
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+          )}
+        </View>
+
+        <View style={[styles.card, getCardStyle(theme)]}>
+          <View style={styles.sectionTitleRow}>
+            <Ionicons name="options-outline" size={16} color={theme.muted} />
+            <Text style={[styles.sectionTitle, { color: theme.muted }]}>Goal tuning</Text>
+          </View>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Get a recommended fasting window based on your recent logs.
+          </Text>
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: goalTuningBusy ? 0.7 : 1 },
+              ]}
+              onPress={onRequestGoalTuning}
+              disabled={goalTuningBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {goalTuningBusy ? 'Analyzing...' : 'Get recommendation'}
+              </Text>
+            </Pressable>
+            {goalTuningResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onApplyGoalTuning}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Use recommendation</Text>
+              </Pressable>
             ) : null}
           </View>
-        ) : null}
-      </View>
-    </ScrollView>
-  </ScreenShell>
-);
+          {goalTuningResult ? (
+            <View style={styles.smartResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Recommended: {goalTuningResult.recommendedProtocol}
+              </Text>
+              <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.rationale}</Text>
+              {goalTuningResult.note ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.note}</Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      </ScrollView>
+    </ScreenShell>
+  );
 };
 
 const HistoryScreen = ({
@@ -1295,322 +2134,490 @@ const SettingsScreen = ({
   onSendTestReminder,
   onOpenCalorieHelper,
   onClearHistory,
-}: ScreenProps) => (
-  <ScreenShell theme={theme}>
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-      <HeaderBar
-        theme={theme}
-        title="Settings"
-        subtitle="Personalize Fasting Lane"
-      />
+}: ScreenProps) => {
+  const [showProtocol, setShowProtocol] = useState(true);
+  const [showReminders, setShowReminders] = useState(false);
+  const [showNutrition, setShowNutrition] = useState(false);
+  const [showUnits, setShowUnits] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showAppearance, setShowAppearance] = useState(false);
+  const [showDisclaimer, setShowDisclaimer] = useState(true);
+
+  return (
+    <ScreenShell theme={theme}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <HeaderBar
+          theme={theme}
+          title="Settings"
+          subtitle="Personalize Fasting Lane"
+        />
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Protocol</Text>
-        <View style={styles.pillRow}>
-          {PROTOCOLS.map((item) => (
-            <Pressable
-              key={item.key}
-              style={[
-                styles.pill,
-                {
-                  backgroundColor: settings.protocolKey === item.key ? theme.accent : theme.bg,
-                  borderColor: theme.border,
-                },
-              ]}
-              onPress={() => onUpdateSetting('protocolKey', item.key)}
-            >
-              <Text
-                style={[
-                  styles.pillText,
-                  { color: settings.protocolKey === item.key ? '#111' : theme.text },
-                ]}
-              >
-                {item.label}
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowProtocol((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="time-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                Protocol
               </Text>
-            </Pressable>
-          ))}
-        </View>
-
-        {settings.protocolKey === 'custom' ? (
-          <View style={styles.noteRow}>
-            <TextInput
-              style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-              value={String(settings.customFastingHours)}
-              onChangeText={(value) =>
-                onUpdateSetting('customFastingHours', Math.max(1, Number(value) || 1))
-              }
-              keyboardType="numeric"
-            />
-            <Text style={[styles.meta, { color: theme.muted }]}>hours fasting</Text>
-            <TextInput
-              style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-              value={String(settings.customEatingHours)}
-              onChangeText={(value) =>
-                onUpdateSetting('customEatingHours', Math.max(1, Number(value) || 1))
-              }
-              keyboardType="numeric"
-            />
-            <Text style={[styles.meta, { color: theme.muted }]}>hours eating</Text>
+            </View>
           </View>
-        ) : null}
+          <Ionicons
+            name={showProtocol ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
+          />
+        </Pressable>
+        {showProtocol ? (
+          <>
+            <View style={styles.pillRow}>
+              {PROTOCOLS.map((item) => (
+                <Pressable
+                  key={item.key}
+                  style={[
+                    styles.pill,
+                    {
+                      backgroundColor: settings.protocolKey === item.key ? theme.accent : theme.bg,
+                      borderColor: theme.border,
+                    },
+                  ]}
+                  onPress={() => onUpdateSetting('protocolKey', item.key)}
+                >
+                  <Text
+                    style={[
+                      styles.pillText,
+                      { color: settings.protocolKey === item.key ? '#111' : theme.text },
+                    ]}
+                  >
+                    {item.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {settings.protocolKey === 'custom' ? (
+              <View style={styles.noteRow}>
+                <TextInput
+                  style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                  value={String(settings.customFastingHours)}
+                  onChangeText={(value) =>
+                    onUpdateSetting('customFastingHours', Math.max(1, Number(value) || 1))
+                  }
+                  keyboardType="numeric"
+                />
+                <Text style={[styles.meta, { color: theme.muted }]}>hours fasting</Text>
+                <TextInput
+                  style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+                  value={String(settings.customEatingHours)}
+                  onChangeText={(value) =>
+                    onUpdateSetting('customEatingHours', Math.max(1, Number(value) || 1))
+                  }
+                  keyboardType="numeric"
+                />
+                <Text style={[styles.meta, { color: theme.muted }]}>hours eating</Text>
+              </View>
+            ) : null}
+          </>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
       </View>
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Reminders</Text>
-        <View style={styles.switchRow}>
-          <Text style={[styles.meta, { color: theme.text }]}>Smart reminders</Text>
-          <Switch
-            value={settings.remindersEnabled}
-            onValueChange={(value) => onUpdateSetting('remindersEnabled', value)}
-          />
-        </View>
-        <View style={styles.switchRow}>
-          <Text style={[styles.meta, { color: theme.text }]}>Allow night reminders</Text>
-          <Switch
-            value={settings.allowNightReminders}
-            onValueChange={(value) => onUpdateSetting('allowNightReminders', value)}
-            disabled={!settings.remindersEnabled}
-          />
-        </View>
-        <Text style={[styles.microLabel, { color: theme.muted }]}>
-          Quiet hours are 22:00-07:00. Night reminders are off by default.
-        </Text>
-
-          <View style={styles.switchRow}>
-            <Text style={[styles.meta, { color: theme.text }]}>Hydration reminders</Text>
-            <Switch
-              value={settings.hydrationEnabled}
-              onValueChange={(value) => onUpdateSetting('hydrationEnabled', value)}
-            />
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowReminders((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="notifications-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                Reminders
+              </Text>
+            </View>
           </View>
+          <Ionicons
+            name={showReminders ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
+          />
+        </Pressable>
+        {showReminders ? (
+          <>
+            <View style={styles.switchRow}>
+              <Text style={[styles.meta, { color: theme.text }]}>Smart reminders</Text>
+              <Switch
+                value={settings.remindersEnabled}
+                onValueChange={(value) => onUpdateSetting('remindersEnabled', value)}
+              />
+            </View>
+            <View style={styles.switchRow}>
+              <Text style={[styles.meta, { color: theme.text }]}>Allow night reminders</Text>
+              <Switch
+                value={settings.allowNightReminders}
+                onValueChange={(value) => onUpdateSetting('allowNightReminders', value)}
+                disabled={!settings.remindersEnabled}
+              />
+            </View>
+            <Text style={[styles.microLabel, { color: theme.muted }]}>
+              Quiet hours are 22:00-07:00. Night reminders are off by default.
+            </Text>
 
-          <View style={styles.timingBlock}>
-            <Text style={[styles.meta, { color: theme.muted }]}>Hydration timing</Text>
-            <View style={styles.pillRowSingle}>
-              {(['fasting', 'eating', 'both'] as HydrationMode[]).map((mode) => (
+            <View style={styles.switchRow}>
+              <Text style={[styles.meta, { color: theme.text }]}>Hydration reminders</Text>
+              <Switch
+                value={settings.hydrationEnabled}
+                onValueChange={(value) => onUpdateSetting('hydrationEnabled', value)}
+              />
+            </View>
+
+            <View style={styles.timingBlock}>
+              <Text style={[styles.meta, { color: theme.muted }]}>Hydration timing</Text>
+              <View style={styles.pillRowSingle}>
+                {(['fasting', 'eating', 'both'] as HydrationMode[]).map((mode) => (
+                  <Pressable
+                    key={mode}
+                    style={[
+                      styles.pill,
+                      styles.pillCompact,
+                      {
+                        backgroundColor:
+                          settings.hydrationMode === mode ? theme.accent : theme.bg,
+                        borderColor: theme.border,
+                        opacity: settings.hydrationEnabled ? 1 : 0.5,
+                      },
+                    ]}
+                    onPress={() => onUpdateSetting('hydrationMode', mode)}
+                    disabled={!settings.hydrationEnabled}
+                  >
+                    <Text
+                      style={[
+                        styles.pillText,
+                        { color: settings.hydrationMode === mode ? '#111' : theme.text },
+                      ]}
+                    >
+                      {mode === 'fasting' ? 'Fasting' : mode === 'eating' ? 'Eating' : 'Both'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.noteRow}>
+              <Text style={[styles.meta, { color: theme.muted }]}>Hydration interval</Text>
+              {[1, 2, 3, 4].map((hours) => (
                 <Pressable
-                  key={mode}
+                  key={hours}
                   style={[
                     styles.pill,
-                    styles.pillCompact,
                     {
                       backgroundColor:
-                        settings.hydrationMode === mode ? theme.accent : theme.bg,
+                        settings.hydrationIntervalHours === hours ? theme.accent : theme.bg,
                       borderColor: theme.border,
                       opacity: settings.hydrationEnabled ? 1 : 0.5,
                     },
                   ]}
-                  onPress={() => onUpdateSetting('hydrationMode', mode)}
+                  onPress={() => onUpdateSetting('hydrationIntervalHours', hours)}
                   disabled={!settings.hydrationEnabled}
                 >
                   <Text
                     style={[
                       styles.pillText,
-                      { color: settings.hydrationMode === mode ? '#111' : theme.text },
+                      { color: settings.hydrationIntervalHours === hours ? '#111' : theme.text },
                     ]}
-                  >
-                    {mode === 'fasting' ? 'Fasting' : mode === 'eating' ? 'Eating' : 'Both'}
-                  </Text>
-                </Pressable>
-              ))}
+                >
+                  {hours}h
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Notifications: {notificationStatus}
+          </Text>
+          <View style={styles.row}>
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onRequestNotificationPermissions}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                Request permission
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onSendTestReminder}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                Test reminder
+              </Text>
+            </Pressable>
+          </View>
+          </>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowNutrition((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="nutrition-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                Nutrition
+              </Text>
             </View>
           </View>
-
-          <View style={styles.noteRow}>
-            <Text style={[styles.meta, { color: theme.muted }]}>Hydration interval</Text>
-            {[1, 2, 3, 4].map((hours) => (
+          <Ionicons
+            name={showNutrition ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
+          />
+        </Pressable>
+        {showNutrition ? (
+          <>
+            <View style={styles.noteRow}>
+              <Text style={[styles.meta, { color: theme.muted }]}>Daily calorie goal</Text>
+              <TextInput
+                style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+                value={settings.dailyCalorieGoal ? String(settings.dailyCalorieGoal) : ''}
+                onChangeText={(value) => onUpdateSetting('dailyCalorieGoal', Number(value) || 0)}
+                keyboardType="numeric"
+                placeholder="Optional"
+                placeholderTextColor={theme.muted}
+              />
+            </View>
+            <View style={styles.row}>
               <Pressable
-                key={hours}
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onOpenCalorieHelper}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                  Calorie helper
+                </Text>
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
+      </View>
+
+      <View style={[styles.card, getCardStyle(theme)]}> 
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowUnits((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="swap-horizontal-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                Units
+              </Text>
+            </View>
+          </View>
+          <Ionicons
+            name={showUnits ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
+          />
+        </Pressable>
+        {showUnits ? (
+          <View style={styles.noteRow}>
+            <Text style={[styles.meta, { color: theme.muted }]}>Food portions</Text>
+            {(['metric', 'imperial'] as UnitSystem[]).map((option) => (
+              <Pressable
+                key={option}
                 style={[
                   styles.pill,
                   {
-                    backgroundColor:
-                      settings.hydrationIntervalHours === hours ? theme.accent : theme.bg,
+                    backgroundColor: settings.unitSystem === option ? theme.accent : theme.bg,
                     borderColor: theme.border,
-                    opacity: settings.hydrationEnabled ? 1 : 0.5,
                   },
                 ]}
-                onPress={() => onUpdateSetting('hydrationIntervalHours', hours)}
-                disabled={!settings.hydrationEnabled}
+                onPress={() => onUpdateSetting('unitSystem', option)}
               >
                 <Text
                   style={[
                     styles.pillText,
-                    { color: settings.hydrationIntervalHours === hours ? '#111' : theme.text },
+                    { color: settings.unitSystem === option ? '#111' : theme.text },
                   ]}
-              >
-                {hours}h
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Notifications: {notificationStatus}
-        </Text>
-        <View style={styles.row}>
-          <Pressable
-            style={[styles.secondaryButton, { borderColor: theme.border }]}
-            onPress={onRequestNotificationPermissions}
-          >
-            <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
-              Request permission
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.secondaryButton, { borderColor: theme.border }]}
-            onPress={onSendTestReminder}
-          >
-            <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
-              Test reminder
-            </Text>
-          </Pressable>
-        </View>
+                >
+                  {option === 'metric' ? 'Metric' : 'Imperial'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
       </View>
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Nutrition</Text>
-        <View style={styles.noteRow}>
-          <Text style={[styles.meta, { color: theme.muted }]}>Daily calorie goal</Text>
-          <TextInput
-            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-            value={settings.dailyCalorieGoal ? String(settings.dailyCalorieGoal) : ''}
-            onChangeText={(value) => onUpdateSetting('dailyCalorieGoal', Number(value) || 0)}
-            keyboardType="numeric"
-            placeholder="Optional"
-            placeholderTextColor={theme.muted}
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowHistory((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="archive-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                History
+              </Text>
+            </View>
+          </View>
+          <Ionicons
+            name={showHistory ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
           />
-        </View>
-        <View style={styles.row}>
-          <Pressable
-            style={[styles.secondaryButton, { borderColor: theme.border }]}
-            onPress={onOpenCalorieHelper}
-          >
-            <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
-              Calorie helper
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Units</Text>
-        <View style={styles.noteRow}>
-          <Text style={[styles.meta, { color: theme.muted }]}>Food portions</Text>
-          {(['metric', 'imperial'] as UnitSystem[]).map((option) => (
-            <Pressable
-              key={option}
-              style={[
-                styles.pill,
-                {
-                  backgroundColor: settings.unitSystem === option ? theme.accent : theme.bg,
-                  borderColor: theme.border,
-                },
-              ]}
-              onPress={() => onUpdateSetting('unitSystem', option)}
-            >
-              <Text
-                style={[
-                  styles.pillText,
-                  { color: settings.unitSystem === option ? '#111' : theme.text },
-                ]}
+        </Pressable>
+        {showHistory ? (
+          <>
+            <Text style={[styles.meta, { color: theme.muted }]}>Auto-delete old history</Text>
+            <View style={styles.pillRow}>
+              {[
+                { label: 'Keep all', value: 0 },
+                { label: '30 days', value: 30 },
+                { label: '90 days', value: 90 },
+                { label: '180 days', value: 180 },
+                { label: '365 days', value: 365 },
+              ].map((option) => (
+                <Pressable
+                  key={option.label}
+                  style={[
+                    styles.pill,
+                    {
+                      backgroundColor:
+                        settings.historyRetentionDays === option.value
+                          ? theme.accent
+                          : theme.bg,
+                      borderColor: theme.border,
+                    },
+                  ]}
+                  onPress={() => onUpdateSetting('historyRetentionDays', option.value)}
+                >
+                  <Text
+                    style={[
+                      styles.pillText,
+                      { color: settings.historyRetentionDays === option.value ? '#111' : theme.text },
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearHistory}
               >
-                {option === 'metric' ? 'Metric' : 'Imperial'}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                  Clear all history
+                </Text>
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
       </View>
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>History</Text>
-        <Text style={[styles.meta, { color: theme.muted }]}>Auto-delete old history</Text>
-        <View style={styles.pillRow}>
-          {[
-            { label: 'Keep all', value: 0 },
-            { label: '30 days', value: 30 },
-            { label: '90 days', value: 90 },
-            { label: '180 days', value: 180 },
-            { label: '365 days', value: 365 },
-          ].map((option) => (
-            <Pressable
-              key={option.label}
-              style={[
-                styles.pill,
-                {
-                  backgroundColor:
-                    settings.historyRetentionDays === option.value
-                      ? theme.accent
-                      : theme.bg,
-                  borderColor: theme.border,
-                },
-              ]}
-              onPress={() => onUpdateSetting('historyRetentionDays', option.value)}
-            >
-              <Text
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowAppearance((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="color-palette-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                Appearance
+              </Text>
+            </View>
+          </View>
+          <Ionicons
+            name={showAppearance ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
+          />
+        </Pressable>
+        {showAppearance ? (
+          <View style={styles.noteRow}>
+            <Text style={[styles.meta, { color: theme.muted }]}>Theme</Text>
+            {(['system', 'light', 'dark'] as ThemePreference[]).map((option) => (
+              <Pressable
+                key={option}
                 style={[
-                  styles.pillText,
-                  { color: settings.historyRetentionDays === option.value ? '#111' : theme.text },
+                  styles.pill,
+                  {
+                    backgroundColor: settings.themePreference === option ? theme.accent : theme.bg,
+                    borderColor: theme.border,
+                  },
                 ]}
+                onPress={() => onUpdateSetting('themePreference', option)}
               >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <View style={styles.row}>
-          <Pressable
-            style={[styles.secondaryButton, { borderColor: theme.border }]}
-            onPress={onClearHistory}
-          >
-            <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
-              Clear all history
-            </Text>
-          </Pressable>
-        </View>
+                <Text
+                  style={[
+                    styles.pillText,
+                    { color: settings.themePreference === option ? '#111' : theme.text },
+                  ]}
+                >
+                  {option}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
       </View>
 
       <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Appearance</Text>
-        <View style={styles.noteRow}>
-          <Text style={[styles.meta, { color: theme.muted }]}>Theme</Text>
-          {(['system', 'light', 'dark'] as ThemePreference[]).map((option) => (
-            <Pressable
-              key={option}
-              style={[
-                styles.pill,
-                {
-                  backgroundColor: settings.themePreference === option ? theme.accent : theme.bg,
-                  borderColor: theme.border,
-                },
-              ]}
-              onPress={() => onUpdateSetting('themePreference', option)}
-            >
-              <Text
-                style={[
-                  styles.pillText,
-                  { color: settings.themePreference === option ? '#111' : theme.text },
-                ]}
-              >
-                {option}
+        <Pressable
+          style={styles.sectionHeaderRow}
+          onPress={() => setShowDisclaimer((prev) => !prev)}
+        >
+          <View style={styles.sectionHeaderLeft}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="information-circle-outline" size={16} color={theme.muted} />
+              <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
+                Disclaimer
               </Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <Text style={[styles.sectionTitle, { color: theme.muted }]}>Disclaimer</Text>
-        <Text style={[styles.meta, { color: theme.muted }]}> 
-          This app is for informational and tracking purposes only and is not medical advice. Always
-          consult a healthcare professional before making changes to your diet or fasting routine.
-        </Text>
+            </View>
+          </View>
+          <Ionicons
+            name={showDisclaimer ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.muted}
+          />
+        </Pressable>
+        {showDisclaimer ? (
+          <Text style={[styles.meta, { color: theme.muted }]}> 
+            This app is for informational and tracking purposes only and is not medical advice. Always
+            consult a healthcare professional before making changes to your diet or fasting routine.
+          </Text>
+        ) : (
+          <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
+        )}
       </View>
     </ScrollView>
   </ScreenShell>
-);
+  );
+};
 
 export default function App() {
   const systemScheme = useColorScheme();
+  const [resolvedScheme, setResolvedScheme] = useState<'light' | 'dark'>(
+    systemScheme === 'dark' ? 'dark' : 'light'
+  );
   const dbRef = useRef<SQLite.SQLiteDatabase | null>(null);
   const [ready, setReady] = useState(false);
   const [notificationStatus, setNotificationStatus] = useState('unknown');
@@ -1668,51 +2675,63 @@ export default function App() {
   const [editEnd, setEditEnd] = useState<Date | null>(null);
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
+  const [plan, setPlan] = useState<AdaptivePlan | null>(null);
+  const [planWeeks, setPlanWeeks] = useState<AdaptivePlanWeek[]>([]);
+  const [planCheckins, setPlanCheckins] = useState<PlanCheckIn[]>([]);
+  const [planBuilderVisible, setPlanBuilderVisible] = useState(false);
+  const [planGoalMode, setPlanGoalMode] = useState<CalorieGoalMode>('lose');
+  const [planPace, setPlanPace] = useState<PlanPace>('gentle');
+  const [planStartProtocol, setPlanStartProtocol] = useState('16:8');
+  const [planRampWeeks, setPlanRampWeeks] = useState(4);
+  const [planMinEatingHours, setPlanMinEatingHours] = useState(8);
+  const [planBusy, setPlanBusy] = useState(false);
+  const [checkinAdherence, setCheckinAdherence] = useState('80');
+  const [checkinEnergy, setCheckinEnergy] = useState(3);
+  const [checkinHunger, setCheckinHunger] = useState(3);
+  const [checkinConflicts, setCheckinConflicts] = useState('');
+  const [checkinSuggestion, setCheckinSuggestion] = useState<PlanSuggestion | null>(null);
+
+  useEffect(() => {
+    if (systemScheme) {
+      setResolvedScheme(systemScheme === 'dark' ? 'dark' : 'light');
+    }
+  }, [systemScheme]);
+
+  useEffect(() => {
+    const subscription = Appearance.addChangeListener(({ colorScheme }) => {
+      setResolvedScheme(colorScheme === 'dark' ? 'dark' : 'light');
+    });
+    return () => subscription.remove();
+  }, []);
 
   const theme: Theme = useMemo(() => {
     const lightTheme: Theme = {
       mode: 'light',
-      bg: '#F6F1EA',
-      bgAlt: '#EDE6DC',
+      bg: '#F3F5F8',
+      bgAlt: '#E9EDF2',
       card: '#FFFFFF',
-      text: '#1B1C1A',
-      muted: '#6A6760',
-      accent: '#2F6B5E',
-      border: '#E2D9CD',
-      shadow: '#4A4339',
+      text: '#1C2330',
+      muted: '#6B788C',
+      accent: '#2CB7B3',
+      border: '#DCE3EB',
+      shadow: '#7B8896',
     };
     const darkTheme: Theme = {
       mode: 'dark',
-      bg: '#121514',
-      bgAlt: '#0B0E0E',
-      card: '#1B201F',
-      text: '#F2F1ED',
-      muted: '#A8A39B',
-      accent: '#E1B35D',
-      border: '#2B3230',
+      bg: '#0F1723',
+      bgAlt: '#151F2E',
+      card: '#1B2739',
+      text: '#E9EEF4',
+      muted: '#9DA9BA',
+      accent: '#2CB7B3',
+      border: '#27364C',
       shadow: '#000000',
     };
     if (settings.themePreference === 'system') {
-      const systemApplied = systemScheme ?? 'light';
-      return systemApplied === 'dark'
-        ? {
-            ...darkTheme,
-            bg: '#141817',
-            bgAlt: '#0F1211',
-            card: '#1F2423',
-            accent: '#E7C07A',
-            border: '#323835',
-          }
-        : {
-            ...lightTheme,
-            bg: '#F3F2ED',
-            bgAlt: '#E7E2DA',
-            accent: '#2B7566',
-            border: '#DED7CD',
-          };
+      return resolvedScheme === 'dark' ? darkTheme : lightTheme;
     }
     return settings.themePreference === 'dark' ? darkTheme : lightTheme;
-  }, [settings.themePreference, systemScheme]);
+  }, [settings.themePreference, resolvedScheme]);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -1856,6 +2875,394 @@ export default function App() {
     setNotes(notesResult);
     const active = sessionsResult.find((session) => session.end_time === null) ?? null;
     setActiveSession(active);
+    await loadPlanData();
+  };
+
+  const loadPlanData = async () => {
+    const rows = await getAll<{
+      id: number;
+      goal_mode: CalorieGoalMode;
+      target_pace: PlanPace;
+      start_protocol: string;
+      target_protocol: string;
+      min_eating_hours: number;
+      ramp_weeks: number;
+      start_date: number;
+      status: string;
+      created_at: number;
+      updated_at: number;
+    }>('SELECT * FROM adaptive_plans WHERE status = ? ORDER BY start_date DESC LIMIT 1;', [
+      'active',
+    ]);
+    if (rows.length === 0) {
+      setPlan(null);
+      setPlanWeeks([]);
+      setPlanCheckins([]);
+      return;
+    }
+    const row = rows[0];
+    const loadedPlan: AdaptivePlan = {
+      id: row.id,
+      goalMode: row.goal_mode,
+      targetPace: row.target_pace,
+      startProtocol: row.start_protocol,
+      targetProtocol: row.target_protocol,
+      minEatingHours: row.min_eating_hours,
+      rampWeeks: row.ramp_weeks,
+      startDate: row.start_date,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    setPlan(loadedPlan);
+    const weekRows = await getAll<AdaptivePlanWeek>(
+      'SELECT * FROM adaptive_plan_weeks WHERE plan_id = ? ORDER BY week_index ASC;',
+      [loadedPlan.id]
+    );
+    setPlanWeeks(weekRows);
+    const checkinRows = await getAll<PlanCheckIn>(
+      'SELECT * FROM adaptive_plan_checkins WHERE plan_id = ? ORDER BY created_at DESC;',
+      [loadedPlan.id]
+    );
+    setPlanCheckins(checkinRows);
+  };
+
+  const clampProtocolForMinEating = (protocolKey: string, minEatingHours: number) => {
+    const allowed = PROTOCOL_ORDER.filter(
+      (key) => (PROTOCOL_EATING_HOURS[key] ?? 0) >= minEatingHours
+    );
+    if (allowed.length === 0) return protocolKey;
+    if (allowed.includes(protocolKey)) return protocolKey;
+    return allowed[allowed.length - 1];
+  };
+
+  const resolveTargetProtocol = (goalMode: CalorieGoalMode, pace: PlanPace, minEatingHours: number) => {
+    const mapping: Record<CalorieGoalMode, Record<PlanPace, string>> = {
+      lose: { gentle: '16:8', moderate: '17:7', aggressive: '18:6' },
+      maintain: { gentle: '15:9', moderate: '16:8', aggressive: '17:7' },
+      gain: { gentle: '15:9', moderate: '15:9', aggressive: '16:8' },
+    };
+    const target = mapping[goalMode]?.[pace] ?? '16:8';
+    return clampProtocolForMinEating(target, minEatingHours);
+  };
+
+  const getProtocolIndex = (protocolKey: string) => {
+    const index = PROTOCOL_ORDER.indexOf(protocolKey);
+    return index === -1 ? 1 : index;
+  };
+
+  const getCalorieAdjustment = (goalMode: CalorieGoalMode, pace: PlanPace) => {
+    if (goalMode === 'maintain') return 0;
+    const magnitude = pace === 'aggressive' ? 300 : pace === 'moderate' ? 200 : 100;
+    return goalMode === 'lose' ? -magnitude : magnitude;
+  };
+
+  const buildPlanWeeks = (
+    startProtocol: string,
+    goalMode: CalorieGoalMode,
+    pace: PlanPace,
+    rampWeeks: number,
+    minEatingHours: number,
+    baseCalories: number
+  ) => {
+    const safeWeeks = Math.max(2, Math.min(8, rampWeeks));
+    const targetProtocol = resolveTargetProtocol(goalMode, pace, minEatingHours);
+    const startClamped = clampProtocolForMinEating(startProtocol, minEatingHours);
+    const startIndex = getProtocolIndex(startClamped);
+    const targetIndex = getProtocolIndex(targetProtocol);
+    const steps = Math.max(0, targetIndex - startIndex);
+    const adjustment = getCalorieAdjustment(goalMode, pace);
+    const weeks = Array.from({ length: safeWeeks }, (_, weekIndex) => {
+      const progress = safeWeeks === 1 ? 0 : weekIndex / (safeWeeks - 1);
+      const step = steps === 0 ? 0 : Math.round(steps * progress);
+      const protocolKey = PROTOCOL_ORDER[Math.min(startIndex + step, targetIndex)];
+      const calories =
+        baseCalories > 0 ? Math.max(0, Math.round(baseCalories + adjustment * progress)) : null;
+      return {
+        weekIndex,
+        protocolKey,
+        dailyCalories: calories,
+        notes: weekIndex === 0 ? 'Start steady and focus on consistency.' : null,
+      };
+    });
+    return { targetProtocol, weeks };
+  };
+
+  const requestPlanRecommendation = async (payload: {
+    goalMode: CalorieGoalMode;
+    targetPace: PlanPace;
+    startProtocol: string;
+    minEatingHours: number;
+    rampWeeks: number;
+    dailyCalorieGoal: number;
+    adherencePct: number;
+    avgFastingHours: number;
+  }) => {
+    if (!FOOD_API_URL) return null;
+    try {
+      const response = await fetch(`${FOOD_API_URL}/v1/plan/recommend`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(FOOD_API_KEY ? { 'X-API-KEY': FOOD_API_KEY } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  };
+
+  const createAdaptivePlan = async () => {
+    if (planBusy) return;
+    setPlanBusy(true);
+    try {
+      setCheckinSuggestion(null);
+      const baseCalories = settings.dailyCalorieGoal;
+      const recommendation = await requestPlanRecommendation({
+        goalMode: planGoalMode,
+        targetPace: planPace,
+        startProtocol: planStartProtocol,
+        minEatingHours: planMinEatingHours,
+        rampWeeks: planRampWeeks,
+        dailyCalorieGoal: baseCalories,
+        adherencePct,
+        avgFastingHours: Number((avgWeekMs / 3600000).toFixed(1)),
+      });
+
+      const localPlan = buildPlanWeeks(
+        planStartProtocol,
+        planGoalMode,
+        planPace,
+        planRampWeeks,
+        planMinEatingHours,
+        baseCalories
+      );
+
+      const targetProtocol =
+        recommendation?.targetProtocol && PROTOCOL_ORDER.includes(recommendation.targetProtocol)
+          ? recommendation.targetProtocol
+          : localPlan.targetProtocol;
+      const normalizedWeeks = Array.isArray(recommendation?.weeks)
+        ? recommendation.weeks
+            .map((week: any, index: number) => ({
+              weekIndex:
+                Number.isFinite(Number(week.weekIndex)) ? Number(week.weekIndex) : index,
+              protocolKey:
+                typeof week.protocolKey === 'string' && PROTOCOL_ORDER.includes(week.protocolKey)
+                  ? week.protocolKey
+                  : localPlan.weeks[index]?.protocolKey ?? localPlan.targetProtocol,
+              dailyCalories:
+                Number.isFinite(Number(week.dailyCalories)) ? Number(week.dailyCalories) : null,
+              notes: typeof week.notes === 'string' ? week.notes : null,
+            }))
+            .filter((week: any) => week.weekIndex !== null)
+        : [];
+      const weeks =
+        normalizedWeeks.length > 0
+          ? normalizedWeeks
+          : localPlan.weeks;
+
+      const nowTs = Date.now();
+      await run('UPDATE adaptive_plans SET status = ? WHERE status = ?;', ['archived', 'active']);
+      await run(
+        `INSERT INTO adaptive_plans (
+          goal_mode,
+          target_pace,
+          start_protocol,
+          target_protocol,
+          min_eating_hours,
+          ramp_weeks,
+          start_date,
+          status,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [
+          planGoalMode,
+          planPace,
+          planStartProtocol,
+          targetProtocol,
+          planMinEatingHours,
+          weeks.length,
+          nowTs,
+          'active',
+          nowTs,
+          nowTs,
+        ]
+      );
+      const planRow = await getAll<{ id: number }>(
+        'SELECT id FROM adaptive_plans WHERE status = ? ORDER BY id DESC LIMIT 1;',
+        ['active']
+      );
+      const planId = planRow[0]?.id;
+      if (!planId) throw new Error('Plan creation failed.');
+      await run('DELETE FROM adaptive_plan_weeks WHERE plan_id = ?;', [planId]);
+      for (const week of weeks) {
+        await run(
+          `INSERT INTO adaptive_plan_weeks (plan_id, week_index, protocol_key, daily_calories, notes)
+           VALUES (?, ?, ?, ?, ?);`,
+          [
+            planId,
+            week.weekIndex,
+            week.protocolKey,
+            week.dailyCalories ?? null,
+            week.notes ?? null,
+          ]
+        );
+      }
+      setPlanBuilderVisible(false);
+      await loadPlanData();
+    } catch (error) {
+      Alert.alert('Adaptive plan', String(error));
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  const openPlanBuilder = () => {
+    if (plan) {
+      setPlanGoalMode(plan.goalMode);
+      setPlanPace(plan.targetPace);
+      setPlanStartProtocol(plan.startProtocol);
+      setPlanRampWeeks(plan.rampWeeks);
+      setPlanMinEatingHours(plan.minEatingHours);
+    }
+    setPlanBuilderVisible(true);
+  };
+
+  const getCurrentPlanWeekIndex = (planItem: AdaptivePlan | null) => {
+    if (!planItem) return 0;
+    const elapsed = Math.floor((now - planItem.startDate) / (7 * 24 * 3600 * 1000));
+    return Math.max(0, Math.min(elapsed, planItem.rampWeeks - 1));
+  };
+
+  const buildCheckinSuggestion = (
+    adherencePctValue: number,
+    energy: number,
+    hunger: number,
+    currentProtocol: string,
+    minEatingHours: number
+  ): PlanSuggestion => {
+    if (adherencePctValue < 70 || energy <= 2 || hunger >= 4) {
+      const currentIndex = getProtocolIndex(currentProtocol);
+      const nextIndex = Math.max(0, currentIndex - 1);
+      const nextProtocol = clampProtocolForMinEating(
+        PROTOCOL_ORDER[nextIndex],
+        minEatingHours
+      );
+      return {
+        action: 'step_down',
+        rationale: 'Dial back slightly to improve adherence and recovery.',
+        nextProtocol,
+      };
+    }
+    if (adherencePctValue >= 85 && energy >= 4 && hunger <= 2) {
+      const currentIndex = getProtocolIndex(currentProtocol);
+      const nextIndex = Math.min(PROTOCOL_ORDER.length - 1, currentIndex + 1);
+      const nextProtocol = clampProtocolForMinEating(
+        PROTOCOL_ORDER[nextIndex],
+        minEatingHours
+      );
+      return {
+        action: 'step_up',
+        rationale: 'You are consistent and feeling good. Consider stepping up.',
+        nextProtocol,
+      };
+    }
+    return {
+      action: 'hold',
+      rationale: 'Stay steady this week and focus on consistency.',
+      nextProtocol: currentProtocol,
+    };
+  };
+
+  const savePlanCheckin = async () => {
+    if (!plan) return;
+    const adherencePctValue = Number(checkinAdherence);
+    if (!Number.isFinite(adherencePctValue) || adherencePctValue < 0 || adherencePctValue > 100) {
+      Alert.alert('Check-in', 'Adherence must be between 0 and 100.');
+      return;
+    }
+    const currentWeekIndex = getCurrentPlanWeekIndex(plan);
+    const currentWeek = planWeeks.find((week) => week.week_index === currentWeekIndex);
+    const currentProtocol = currentWeek?.protocol_key ?? plan.startProtocol;
+    const suggestion = buildCheckinSuggestion(
+      adherencePctValue,
+      checkinEnergy,
+      checkinHunger,
+      currentProtocol,
+      plan.minEatingHours
+    );
+    const nowTs = Date.now();
+    await run(
+      `INSERT INTO adaptive_plan_checkins (
+        plan_id,
+        week_index,
+        adherence_pct,
+        energy,
+        hunger,
+        conflicts,
+        suggestion_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+      [
+        plan.id,
+        currentWeekIndex,
+        Math.round(adherencePctValue),
+        checkinEnergy,
+        checkinHunger,
+        checkinConflicts.trim() || null,
+        JSON.stringify(suggestion),
+        nowTs,
+      ]
+    );
+    setCheckinSuggestion(suggestion);
+    setCheckinConflicts('');
+    await loadPlanData();
+  };
+
+  const applyPlanSuggestion = async () => {
+    if (!plan || !checkinSuggestion) return;
+    if (checkinSuggestion.action === 'hold') return;
+    const currentWeekIndex = getCurrentPlanWeekIndex(plan);
+    const currentWeek = planWeeks.find((week) => week.week_index === currentWeekIndex);
+    const baseProtocol = currentWeek?.protocol_key ?? plan.startProtocol;
+    const nextProtocol = checkinSuggestion.nextProtocol ?? baseProtocol;
+    const baseIndex = getProtocolIndex(baseProtocol);
+    const nextIndex = getProtocolIndex(nextProtocol);
+    const delta = Math.max(-1, Math.min(1, nextIndex - baseIndex));
+
+    const updatedWeeks = planWeeks.map((week) => {
+      if (week.week_index < currentWeekIndex) return week;
+      const currentIndex = getProtocolIndex(week.protocol_key);
+      const updatedIndex = Math.max(
+        0,
+        Math.min(PROTOCOL_ORDER.length - 1, currentIndex + delta)
+      );
+      const updatedProtocol = clampProtocolForMinEating(
+        PROTOCOL_ORDER[updatedIndex],
+        plan.minEatingHours
+      );
+      return {
+        ...week,
+        protocol_key: updatedProtocol,
+      };
+    });
+
+    for (const week of updatedWeeks) {
+      await run(
+        'UPDATE adaptive_plan_weeks SET protocol_key = ? WHERE id = ?;',
+        [week.protocol_key, week.id]
+      );
+    }
+    await run('UPDATE adaptive_plans SET updated_at = ? WHERE id = ?;', [
+      Date.now(),
+      plan.id,
+    ]);
+    await loadPlanData();
   };
 
   const purgeHistory = async (days: number) => {
@@ -2149,6 +3556,20 @@ export default function App() {
     await refreshData();
   };
 
+  const promptImageSource = () =>
+    new Promise<'camera' | 'library' | null>((resolve) => {
+      Alert.alert(
+        'Photo source',
+        'Choose a photo source.',
+        [
+          { text: 'Camera', onPress: () => resolve('camera') },
+          { text: 'Photo library', onPress: () => resolve('library') },
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+        ],
+        { cancelable: true }
+      );
+    });
+
   const addPhotoNote = async () => {
     if (activeSession) {
       Alert.alert('Fasting in progress', 'Photo notes can be added during eating windows.');
@@ -2159,17 +3580,35 @@ export default function App() {
       return;
     }
     setScanBusy(true);
-    setScanStatus('Opening camera...');
+    setScanStatus('Opening photo picker...');
     try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert('Camera', 'Camera permission is required.');
-        return;
+      const source = await promptImageSource();
+      if (!source) return;
+
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('Camera', 'Camera permission is required.');
+          return;
+        }
+      } else {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('Photos', 'Photo library permission is required.');
+          return;
+        }
       }
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.7,
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      });
+
+      const result =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({
+              quality: 0.7,
+              mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              quality: 0.7,
+              mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            });
       if (result.canceled || !result.assets?.[0]?.uri) return;
       const asset = result.assets[0];
       setScanStatus('Analyzing photo...');
@@ -2193,7 +3632,7 @@ export default function App() {
       }
       const data = await response.json();
       const thumbBase64 = data.thumbnailBase64;
-      const items = data.items || [];
+      const items = Array.isArray(data.items) ? data.items : [];
       const totalCalories = data.totalCalories ?? null;
 
       let thumbPath: string | null = null;
@@ -2212,7 +3651,11 @@ export default function App() {
       }
 
       setScanThumbPath(thumbPath);
-      setScanItems(items);
+      setScanItems(
+        items.length > 0
+          ? items
+          : [{ name: '', portion: '', calories: null, count: null }]
+      );
       setScanTotalCalories(totalCalories);
       setScanVisible(true);
       setScanStatus('Review the estimate before saving.');
@@ -2322,15 +3765,33 @@ export default function App() {
     setFridgeIdeas(null);
     setFridgeBusy(true);
     try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert('Camera', 'Camera permission is required.');
-        return;
+      const source = await promptImageSource();
+      if (!source) return;
+
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('Camera', 'Camera permission is required.');
+          return;
+        }
+      } else {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('Photos', 'Photo library permission is required.');
+          return;
+        }
       }
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.7,
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      });
+
+      const result =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({
+              quality: 0.7,
+              mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              quality: 0.7,
+              mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            });
       if (result.canceled || !result.assets?.[0]?.uri) return;
       const asset = result.assets[0];
 
@@ -2580,8 +4041,14 @@ export default function App() {
         throw new Error(detail || 'Refresh failed.');
       }
       const data = (await response.json()) as FoodEstimateResult;
-      setScanItems(data.items ?? []);
-      setScanTotalCalories(data.totalCalories ?? 0);
+      setScanItems((prev) =>
+        Array.isArray(data.items) && data.items.length > 0 ? data.items : prev
+      );
+      setScanTotalCalories((prev) =>
+        Array.isArray(data.items) && data.items.length > 0
+          ? data.totalCalories ?? 0
+          : prev ?? 0
+      );
     } catch (error) {
       Alert.alert('Refresh failed', String(error));
     } finally {
@@ -2622,6 +4089,16 @@ export default function App() {
           : null,
     };
     setScanItems(next);
+  };
+
+  const removeScanItem = (index: number) => {
+    if (!scanItems) return;
+    const next = scanItems.filter((_, itemIndex) => itemIndex !== index);
+    const finalItems =
+      next.length > 0 ? next : [{ name: '', portion: '', calories: null, count: null }];
+    setScanItems(finalItems);
+    const total = finalItems.reduce((sum, item) => sum + (item.calories ?? 0), 0);
+    setScanTotalCalories(total);
   };
 
   const saveScanResult = async () => {
@@ -2965,6 +4442,35 @@ export default function App() {
     onRequestRescue: requestRescue,
     onClearRescue: clearRescue,
     onOpenRescue: openRescue,
+    plan,
+    planWeeks,
+    planCheckins,
+    planBuilderVisible,
+    planGoalMode,
+    setPlanGoalMode,
+    planPace,
+    setPlanPace,
+    planStartProtocol,
+    setPlanStartProtocol,
+    planRampWeeks,
+    setPlanRampWeeks,
+    planMinEatingHours,
+    setPlanMinEatingHours,
+    planBusy,
+    onOpenPlanBuilder: openPlanBuilder,
+    onClosePlanBuilder: () => setPlanBuilderVisible(false),
+    onCreatePlan: createAdaptivePlan,
+    checkinAdherence,
+    setCheckinAdherence,
+    checkinEnergy,
+    setCheckinEnergy,
+    checkinHunger,
+    setCheckinHunger,
+    checkinConflicts,
+    setCheckinConflicts,
+    checkinSuggestion,
+    onSavePlanCheckin: savePlanCheckin,
+    onApplyPlanSuggestion: applyPlanSuggestion,
   };
 
   if (!ready || !fontsLoaded) {
@@ -3025,7 +4531,7 @@ export default function App() {
                 Insights: 'stats-chart-outline',
                 Eating: 'restaurant-outline',
                 Smart: 'sparkles-outline',
-                History: 'calendar-outline',
+                Plan: 'map-outline',
                 Settings: 'settings-outline',
               };
               return <Ionicons name={icons[route.name] ?? 'ellipse'} size={size} color={color} />;
@@ -3034,11 +4540,11 @@ export default function App() {
         >
           <Tab.Screen name="Home">{() => <HomeScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="Eating">{() => <EatingScreen {...screenProps} />}</Tab.Screen>
+          <Tab.Screen name="Plan">{() => <PlanScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="Smart">{() => <SmartToolsScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="Insights">
-            {() => <InsightsScreen {...screenProps} />}
+            {() => <InsightsHistoryScreen {...screenProps} />}
           </Tab.Screen>
-          <Tab.Screen name="History">{() => <HistoryScreen {...screenProps} />}</Tab.Screen>
           <Tab.Screen name="Settings">{() => <SettingsScreen {...screenProps} />}</Tab.Screen>
         </Tab.Navigator>
       </NavigationContainer>
@@ -3156,61 +4662,75 @@ export default function App() {
                     (item.calories === 0 && !item.sourceName);
                   return (
                   <View key={`scan-item-${index}`} style={styles.scanRow}>
-                    <View style={styles.scanText}>
+                    <View style={styles.scanNameRow}>
                       <TextInput
-                        style={[styles.scanInput, { color: theme.text, borderColor: theme.border }]}
-                        value={item.name}
+                        style={[
+                          styles.scanInput,
+                          styles.scanInputFlex,
+                          { color: theme.text, borderColor: theme.border },
+                        ]}
+                        value={item.name ?? ''}
                         onChangeText={(value) => updateScanItemName(index, value)}
                         placeholder="Food name"
                         placeholderTextColor={theme.muted}
                       />
-                      <View style={styles.scanInlineRow}>
-                        <TextInput
-                          style={[
-                            styles.scanInput,
-                            styles.scanInputFlex,
-                            { color: theme.text, borderColor: theme.border },
-                          ]}
-                          value={item.portion ?? ''}
-                          onChangeText={(value) => updateScanItemPortion(index, value)}
-                          placeholder={
-                            settings.unitSystem === 'imperial'
-                              ? 'Portion (e.g., 5 oz)'
-                              : 'Portion (e.g., 150 g)'
-                          }
-                          placeholderTextColor={theme.muted}
-                        />
-                        <TextInput
-                          style={[
-                            styles.scanInput,
-                            styles.scanCountInput,
-                            { color: theme.text, borderColor: theme.border },
-                          ]}
-                          value={item.count !== null && item.count !== undefined ? String(item.count) : ''}
-                          onChangeText={(value) => updateScanItemCount(index, value)}
-                          placeholder="Count"
-                          placeholderTextColor={theme.muted}
-                          keyboardType="numeric"
-                        />
-                      </View>
+                      <Pressable
+                        style={[styles.iconButton, { borderColor: theme.border }]}
+                        onPress={() => removeScanItem(index)}
+                      >
+                        <Ionicons name="trash-outline" size={16} color={theme.muted} />
+                      </Pressable>
                     </View>
-                    <TextInput
-                      style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-                      value={
-                        isUnrecognized
-                          ? ''
-                          : item.calories !== null && item.calories !== undefined
-                            ? String(item.calories)
-                            : ''
-                      }
-                      onChangeText={(value) => updateScanItemCalories(index, value)}
-                      keyboardType="numeric"
-                      placeholder="kcal"
-                      placeholderTextColor={theme.muted}
-                    />
+                    <View style={styles.scanFieldRow}>
+                      <TextInput
+                        style={[
+                          styles.scanInput,
+                          styles.scanInputFlex,
+                          { color: theme.text, borderColor: theme.border },
+                        ]}
+                        value={item.portion ?? ''}
+                        onChangeText={(value) => updateScanItemPortion(index, value)}
+                        placeholder={
+                          settings.unitSystem === 'imperial'
+                            ? 'Portion (e.g., 5 oz)'
+                            : 'Portion (e.g., 150 g)'
+                        }
+                        placeholderTextColor={theme.muted}
+                      />
+                      <TextInput
+                        style={[
+                          styles.scanInput,
+                          styles.scanCountInput,
+                          { color: theme.text, borderColor: theme.border },
+                        ]}
+                        value={item.count !== null && item.count !== undefined ? String(item.count) : ''}
+                        onChangeText={(value) => updateScanItemCount(index, value)}
+                        placeholder="Count"
+                        placeholderTextColor={theme.muted}
+                        keyboardType="numeric"
+                      />
+                      <TextInput
+                        style={[
+                          styles.scanInput,
+                          styles.scanCountInput,
+                          { color: theme.text, borderColor: theme.border },
+                        ]}
+                        value={
+                          isUnrecognized
+                            ? ''
+                            : item.calories !== null && item.calories !== undefined
+                              ? String(item.calories)
+                              : ''
+                        }
+                        onChangeText={(value) => updateScanItemCalories(index, value)}
+                        keyboardType="numeric"
+                        placeholder="kcal"
+                        placeholderTextColor={theme.muted}
+                      />
+                    </View>
                     {isUnrecognized ? (
                       <Text style={[styles.warningText, { color: theme.muted }]}>
-                        Not recognized. Update the name and tap Refresh calories, or enter kcal.
+                        Not recognized. Enter a name and kcal, or refresh calories.
                       </Text>
                     ) : null}
                   </View>
@@ -3531,10 +5051,18 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     marginBottom: 16,
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    justifyContent: 'center',
+  },
+  headerContent: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  headerTitle: {
+    textAlign: 'center',
+  },
+  headerSubtitle: {
+    textAlign: 'center',
   },
   logoBadge: {
     flexDirection: 'row',
@@ -3573,6 +5101,46 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     textTransform: 'uppercase',
     marginBottom: 10,
+    fontFamily: 'Manrope_600SemiBold',
+    lineHeight: 16,
+    includeFontPadding: false,
+  },
+  sectionTitleCompact: {
+    marginBottom: 2,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8,
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  sectionHeaderLeft: {
+    flex: 1,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    fontFamily: 'Manrope_500Medium',
+  },
+  segmentedRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  segmentedButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  segmentedText: {
+    fontSize: 12,
     fontFamily: 'Manrope_600SemiBold',
   },
   timer: {
@@ -3659,9 +5227,32 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 12,
   },
+  chartWrap: {
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  chartBars: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    position: 'relative',
+  },
+  chartOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  },
   chartCol: {
     alignItems: 'center',
     flex: 1,
+  },
+  chartLabels: {
+    flexDirection: 'row',
+    marginTop: 6,
+  },
+  chartLabelCol: {
+    flex: 1,
+    alignItems: 'center',
   },
   chartBar: {
     width: 12,
@@ -3720,16 +5311,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   scanRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    flexDirection: 'column',
+    gap: 8,
     marginBottom: 10,
   },
-  scanText: {
-    flex: 1,
+  scanNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
-  scanInlineRow: {
+  scanFieldRow: {
     flexDirection: 'row',
     gap: 8,
   },
@@ -3765,6 +5356,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 10,
     flexWrap: 'wrap',
+  },
+  planWeekRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    gap: 4,
+  },
+  planWeekHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   smartBlock: {
     marginTop: 12,

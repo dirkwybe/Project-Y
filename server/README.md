@@ -9,6 +9,7 @@ Overview
 Endpoints
 - GET /health
 - POST /v1/food/analyze
+- POST /v1/plan/recommend
 
 Request (POST /v1/food/analyze)
 - Multipart form data
@@ -20,6 +21,20 @@ Response
 - items[]: name, portion, grams, confidence, calories, sourceName
 - totalCalories
 - disclaimer
+
+Request (POST /v1/plan/recommend)
+- JSON
+  - goalMode
+  - targetPace
+  - startProtocol
+  - minEatingHours
+  - rampWeeks
+  - dailyCalorieGoal
+
+Response
+- targetProtocol
+- weeks[]: weekIndex, protocolKey, dailyCalories, notes
+- rationale
 
 Environment variables
 - OPENAI_API_KEY
