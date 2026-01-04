@@ -615,7 +615,7 @@ app.post('/v1/autopilot', requireApiKey, async (req, res) => {
         {
           role: 'system',
           content:
-            `You are a nutrition planner. Create a timed eating-window plan. ${unitHint} Return only JSON: {"items":[{"time":"HH:MM","title":string,"calories":number,"notes":string}],"totalCalories":number}. Keep 3-4 items and keep total calories near remaining calories if provided.`,
+            `You are a nutrition planner. Create a timed eating-window plan. ${unitHint} Return only JSON: {"items":[{"time":"HH:MM","title":string,"calories":number,"ingredients":string[],"notes":string}],"totalCalories":number}. Keep 3-4 items and keep total calories near remaining calories if provided.`,
         },
         {
           role: 'user',
@@ -633,6 +633,9 @@ app.post('/v1/autopilot', requireApiKey, async (req, res) => {
             time: String(item.time ?? ''),
             title: String(item.title ?? 'Meal'),
             calories: Number(item.calories) || 0,
+            ingredients: Array.isArray(item.ingredients)
+              ? item.ingredients.map((ingredient) => String(ingredient))
+              : [],
             notes: item.notes ? String(item.notes) : undefined,
           }))
           .filter((item) => item.time && Number.isFinite(item.calories) && item.calories > 0)

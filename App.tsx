@@ -29,6 +29,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Polyline } from 'react-native-svg';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { useFonts } from 'expo-font';
 import {
   Manrope_400Regular,
@@ -104,16 +105,22 @@ type GoalTuningResult = {
 };
 
 type AutopilotItem = {
+  id: string;
   time: string;
+  timeMs: number;
   title: string;
   calories: number;
   notes?: string;
+  ingredients?: string[];
 };
 
 type AutopilotResult = {
   items: AutopilotItem[];
   totalCalories: number;
   disclaimer?: string;
+  windowStart?: number;
+  windowEnd?: number;
+  windowLabel?: string;
 };
 
 type CravingRescueResult = {
@@ -134,6 +141,15 @@ type FridgeIdeasResult = {
   meals: FridgeMealIdea[];
   calorieLimit: number;
   disclaimer?: string;
+};
+
+type PantryItem = {
+  id: number;
+  title: string;
+  calories: number;
+  ingredients: string[];
+  notes: string | null;
+  createdAt: number;
 };
 
 type AdaptivePlan = {
@@ -168,6 +184,13 @@ type PlanCheckIn = {
   hunger: number;
   conflicts: string | null;
   suggestion_json: string | null;
+  created_at: number;
+};
+
+type PlanUpdate = {
+  id: number;
+  plan_id: number;
+  message: string;
   created_at: number;
 };
 
@@ -212,6 +235,7 @@ type Theme = {
   accent: string;
   border: string;
   shadow: string;
+  panic: string;
 };
 
   type ScreenProps = {
@@ -278,6 +302,11 @@ type Theme = {
   fridgeBusy: boolean;
   onScanFridge: () => void;
   onClearFridgeIdeas: () => void;
+  pantryItems: PantryItem[];
+  onSaveFridgeIdea: (meal: FridgeMealIdea) => void;
+  pantryPickerVisible: boolean;
+  onOpenPantryPicker: () => void;
+  onClosePantryPicker: () => void;
   goalTuningResult: GoalTuningResult | null;
   goalTuningBusy: boolean;
   onRequestGoalTuning: () => void;
@@ -290,6 +319,7 @@ type Theme = {
   onRequestNotificationPermissions: () => void;
   onSendTestReminder: () => void;
   onScanFoodPhoto: () => void;
+  onScanFoodPhotoSmart: () => void;
   scanBusy: boolean;
   scanStatus: string;
   onDeleteNote: (id: number) => void;
@@ -300,6 +330,10 @@ type Theme = {
   autopilotBusy: boolean;
   onRequestAutopilot: () => void;
   onClearAutopilot: () => void;
+  onUpdateAutopilotItem: (itemId: string, updates: Partial<AutopilotItem>) => void;
+  onRemoveAutopilotItem: (itemId: string) => void;
+  onOpenAutopilotTimePicker: (itemId: string) => void;
+  onAddAutopilotItemFromPantry: (item: PantryItem) => void;
   rescueResult: CravingRescueResult | null;
   rescueBusy: boolean;
   onRequestRescue: () => void;
@@ -308,6 +342,8 @@ type Theme = {
   plan: AdaptivePlan | null;
   planWeeks: AdaptivePlanWeek[];
   planCheckins: PlanCheckIn[];
+  planHistory: AdaptivePlan[];
+  planUpdates: PlanUpdate[];
   planBuilderVisible: boolean;
   planGoalMode: CalorieGoalMode;
   setPlanGoalMode: (value: CalorieGoalMode) => void;
@@ -323,17 +359,19 @@ type Theme = {
   onOpenPlanBuilder: () => void;
   onClosePlanBuilder: () => void;
   onCreatePlan: () => void;
-  checkinAdherence: string;
-  setCheckinAdherence: (value: string) => void;
+  checkinAdherence: number;
+  setCheckinAdherence: (value: number) => void;
   checkinEnergy: number;
   setCheckinEnergy: (value: number) => void;
   checkinHunger: number;
   setCheckinHunger: (value: number) => void;
-  checkinConflicts: string;
-  setCheckinConflicts: (value: string) => void;
   checkinSuggestion: PlanSuggestion | null;
   onSavePlanCheckin: () => void;
   onApplyPlanSuggestion: () => void;
+  onTogglePlanStatus: () => void;
+  onActivatePlan: () => void;
+  onDeactivatePlan: () => void;
+  onClearPlan: () => void;
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
@@ -401,6 +439,42 @@ const PROTOCOL_EATING_HOURS: Record<string, number> = {
 const FOOD_API_URL = process.env.EXPO_PUBLIC_FOOD_API_URL ?? '';
 const FOOD_API_KEY = process.env.EXPO_PUBLIC_FOOD_API_KEY ?? '';
 
+const normalizeImageAsset = async (asset: ImagePicker.ImagePickerAsset) => {
+  const uri = asset.uri;
+  const fileName = asset.fileName ?? 'photo';
+  const mimeType = asset.mimeType ?? '';
+  const lowerUri = uri.toLowerCase();
+  const isJpeg =
+    mimeType.includes('jpeg') ||
+    mimeType.includes('jpg') ||
+    lowerUri.endsWith('.jpg') ||
+    lowerUri.endsWith('.jpeg');
+  const isHeif =
+    mimeType.includes('heic') ||
+    mimeType.includes('heif') ||
+    lowerUri.endsWith('.heic') ||
+    lowerUri.endsWith('.heif');
+
+  if (isHeif || !isJpeg) {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [],
+      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return {
+      uri: result.uri,
+      name: `${fileName}.jpg`,
+      type: 'image/jpeg',
+    };
+  }
+
+  return {
+    uri,
+    name: fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') ? fileName : `${fileName}.jpg`,
+    type: mimeType || 'image/jpeg',
+  };
+};
+
 const initDb = async (db: SQLite.SQLiteDatabase) => {
   await db.execAsync(
     `CREATE TABLE IF NOT EXISTS fasting_sessions (
@@ -416,6 +490,14 @@ const initDb = async (db: SQLite.SQLiteDatabase) => {
       timestamp INTEGER NOT NULL,
       text TEXT NOT NULL,
       calories INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS pantry_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      calories INTEGER NOT NULL,
+      ingredients_json TEXT,
+      notes TEXT,
+      created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -452,6 +534,12 @@ const initDb = async (db: SQLite.SQLiteDatabase) => {
       conflicts TEXT,
       suggestion_json TEXT,
       created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS adaptive_plan_updates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_id INTEGER NOT NULL,
+      message TEXT NOT NULL,
+      created_at INTEGER NOT NULL
     );`
   );
 };
@@ -481,6 +569,12 @@ const formatTime = (ts: number) =>
 
 const formatDate = (ts: number) =>
   new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+const parseIngredientsInput = (value: string) =>
+  value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 
 const getDateKey = (ts: number) => {
   const date = new Date(ts);
@@ -658,9 +752,21 @@ const HomeScreen = ({
                   theme={theme}
                   label={formatDuration(activeDuration)}
                 />
-                <Text style={[styles.meta, { color: theme.muted }]}>
-                  {formatDuration(Math.max(0, expectedEnd - now))} left
-                </Text>
+                <View style={styles.fastMetaRow}>
+                  <Text style={[styles.meta, { color: theme.muted }]}>
+                    {formatDuration(Math.max(0, expectedEnd - now))} left
+                  </Text>
+                  <Pressable
+                    style={[
+                      styles.iconButton,
+                      { borderColor: theme.border, backgroundColor: theme.panic },
+                    ]}
+                    onPress={onOpenRescue}
+                    disabled={rescueBusy}
+                  >
+                    <Ionicons name="alert-circle-outline" size={16} color="#FFFFFF" />
+                  </Pressable>
+                </View>
               </>
             ) : null}
             <View style={styles.inlineRow}>
@@ -769,29 +875,6 @@ const HomeScreen = ({
         </View>
       </View>
 
-      <View style={[styles.card, getCardStyle(theme)]}>
-        <View style={styles.sectionTitleRow}>
-          <Ionicons name="alert-circle-outline" size={16} color={theme.muted} />
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Craving rescue</Text>
-        </View>
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Need a reset? Tap the panic button for quick, calming steps.
-        </Text>
-        <View style={styles.row}>
-          <Pressable
-            style={[
-              styles.primaryButton,
-              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: rescueBusy ? 0.7 : 1 },
-            ]}
-            onPress={onOpenRescue}
-            disabled={rescueBusy}
-          >
-            <Text style={styles.primaryButtonText}>
-              {rescueBusy ? 'Coaching...' : 'Panic button'}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
     </ScrollView>
   </ScreenShell>
   );
@@ -1120,58 +1203,6 @@ const EatingScreen = ({
 
       <View style={[styles.card, getCardStyle(theme)]}> 
         <View style={styles.sectionTitleRow}>
-          <Ionicons name="sparkles-outline" size={16} color={theme.muted} />
-          <Text style={[styles.sectionTitle, { color: theme.muted }]}>Eating window autopilot</Text>
-        </View>
-        <Text style={[styles.meta, { color: theme.muted }]}>
-          Plan your eating window with a timed mini-menu.
-        </Text>
-        <View style={styles.row}>
-          <Pressable
-            style={[
-              styles.primaryButton,
-              { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
-            ]}
-            onPress={onRequestAutopilot}
-            disabled={autopilotBusy}
-          >
-            <Text style={styles.primaryButtonText}>
-              {autopilotBusy ? 'Planning...' : 'Build plan'}
-            </Text>
-          </Pressable>
-          {autopilotResult ? (
-            <Pressable
-              style={[styles.secondaryButton, { borderColor: theme.border }]}
-              onPress={onClearAutopilot}
-            >
-              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {autopilotResult ? (
-          <View style={styles.smartResult}>
-            <Text style={[styles.metaStrong, { color: theme.text }]}>
-              Total target: {autopilotResult.totalCalories} kcal
-            </Text>
-            {autopilotResult.items.map((item, index) => (
-              <View key={`${item.time}-${index}`} style={styles.smartMeal}>
-                <Text style={[styles.metaStrong, { color: theme.text }]}>
-                  {item.time} - {item.title} ({item.calories} kcal)
-                </Text>
-                {item.notes ? (
-                  <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
-                ) : null}
-              </View>
-            ))}
-            {autopilotResult.disclaimer ? (
-              <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
-
-      <View style={[styles.card, getCardStyle(theme)]}> 
-        <View style={styles.sectionTitleRow}>
           <Ionicons name="restaurant-outline" size={16} color={theme.muted} />
           <Text style={[styles.sectionTitle, { color: theme.muted }]}>Current window</Text>
         </View>
@@ -1323,6 +1354,8 @@ const PlanScreen = ({
   plan,
   planWeeks,
   planCheckins,
+  planHistory,
+  planUpdates,
   planBuilderVisible,
   planGoalMode,
   setPlanGoalMode,
@@ -1344,13 +1377,16 @@ const PlanScreen = ({
   setCheckinEnergy,
   checkinHunger,
   setCheckinHunger,
-  checkinConflicts,
-  setCheckinConflicts,
   checkinSuggestion,
   onSavePlanCheckin,
   onApplyPlanSuggestion,
+  onTogglePlanStatus,
+  onActivatePlan,
+  onDeactivatePlan,
+  onClearPlan,
 }: ScreenProps) => {
-  const currentWeekIndex = plan
+  const isPlanActive = plan?.status === 'active';
+  const currentWeekIndex = plan && isPlanActive
     ? Math.max(
         0,
         Math.min(
@@ -1359,6 +1395,14 @@ const PlanScreen = ({
         )
       )
     : 0;
+  const weekStart = plan && isPlanActive
+    ? plan.startDate + currentWeekIndex * 7 * 24 * 3600 * 1000
+    : null;
+  const weekEnd = weekStart ? weekStart + 6 * 24 * 3600 * 1000 : null;
+  const weekDayIndex = weekStart
+    ? Math.min(6, Math.max(0, Math.floor((now - weekStart) / (24 * 3600 * 1000))))
+    : 0;
+  const orderedPlanWeeks = [...planWeeks].sort((a, b) => a.week_index - b.week_index);
   const recentSuggestion = (() => {
     if (checkinSuggestion) return checkinSuggestion;
     if (!planCheckins[0]?.suggestion_json) return null;
@@ -1410,19 +1454,80 @@ const PlanScreen = ({
                 Pace: {PLAN_PACES.find((pace) => pace.key === plan.targetPace)?.label ?? plan.targetPace}
               </Text>
               <Text style={[styles.meta, { color: theme.muted }]}>
-                {plan.startProtocol} → {plan.targetProtocol} · Min eating {plan.minEatingHours}h
+                {plan.startProtocol} -> {plan.targetProtocol} - Min eating {plan.minEatingHours}h
               </Text>
               <Text style={[styles.meta, { color: theme.muted }]}>
                 Current week: {currentWeekIndex + 1} of {plan.rampWeeks}
+                {weekStart && weekEnd ? ` - ${formatDate(weekStart)} to ${formatDate(weekEnd)}` : ''}
               </Text>
-              <View style={styles.row}>
+              <View style={[styles.planStatusCard, { borderColor: theme.border, backgroundColor: theme.bgAlt }]}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  Week {currentWeekIndex + 1} · Day {weekDayIndex + 1} · {plan.status}
+                </Text>
+                {isPlanActive ? (
+                  <View style={styles.planDayRow}>
+                    {Array.from({ length: 7 }, (_, index) => (
+                      <View
+                        key={`plan-day-${index}`}
+                        style={[
+                          styles.planDayDot,
+                          {
+                            backgroundColor: index === weekDayIndex ? theme.accent : theme.border,
+                          },
+                        ]}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+              <View style={styles.planActionRow}>
                 <Pressable
                   style={[styles.secondaryButton, { borderColor: theme.border }]}
                   onPress={onOpenPlanBuilder}
                 >
-                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Edit plan</Text>
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Edit</Text>
+                </Pressable>
+                {plan.status === 'draft' ? (
+                  <Pressable
+                    style={[styles.primaryButton, { backgroundColor: theme.accent, shadowColor: theme.shadow }]}
+                    onPress={onActivatePlan}
+                  >
+                    <Text style={styles.primaryButtonText}>Activate</Text>
+                  </Pressable>
+                ) : (
+                  <>
+                    <Pressable
+                      style={[styles.secondaryButton, { borderColor: theme.border }]}
+                      onPress={onTogglePlanStatus}
+                    >
+                      <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                        {plan.status === 'paused' ? 'Resume' : 'Pause'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.secondaryButton, { borderColor: theme.border }]}
+                      onPress={onDeactivatePlan}
+                    >
+                      <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                        Deactivate
+                      </Text>
+                    </Pressable>
+                  </>
+                )}
+                <Pressable
+                  style={[styles.ghostButton, { borderColor: theme.border }]}
+                  onPress={onClearPlan}
+                >
+                  <Text style={[styles.ghostButtonText, { color: theme.text }]}>
+                    Clear
+                  </Text>
                 </Pressable>
               </View>
+              {!isPlanActive ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  Activate the plan to start the timeline and weekly check-ins.
+                </Text>
+              ) : null}
             </View>
 
             <View style={[styles.card, getCardStyle(theme)]}>
@@ -1430,8 +1535,8 @@ const PlanScreen = ({
                 <Ionicons name="calendar-outline" size={16} color={theme.muted} />
                 <Text style={[styles.sectionTitle, { color: theme.muted }]}>Plan timeline</Text>
               </View>
-              {planWeeks.map((week) => {
-                const isCurrent = week.week_index === currentWeekIndex;
+              {orderedPlanWeeks.map((week, index) => {
+                const isCurrent = index === currentWeekIndex && isPlanActive;
                 return (
                   <View
                     key={week.id}
@@ -1443,7 +1548,7 @@ const PlanScreen = ({
                   >
                     <View style={styles.planWeekHeader}>
                       <Text style={[styles.metaStrong, { color: theme.text }]}>
-                        Week {week.week_index + 1}
+                        Week {index + 1}
                       </Text>
                       <Text style={[styles.meta, { color: theme.muted }]}>
                         {week.protocol_key}
@@ -1465,17 +1570,40 @@ const PlanScreen = ({
                 <Ionicons name="clipboard-outline" size={16} color={theme.muted} />
                 <Text style={[styles.sectionTitle, { color: theme.muted }]}>Weekly check-in</Text>
               </View>
+              {!isPlanActive ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  Activate the plan to submit check-ins.
+                </Text>
+              ) : null}
               <Text style={[styles.meta, { color: theme.muted }]}>
                 Log how the week felt to get a recommended adjustment.
               </Text>
-              <TextInput
-                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-                value={checkinAdherence}
-                onChangeText={setCheckinAdherence}
-                keyboardType="numeric"
-                placeholder="Adherence % (0-100)"
-                placeholderTextColor={theme.muted}
-              />
+              <Text style={[styles.meta, { color: theme.muted }]}>Adherence</Text>
+              <View style={styles.emojiRow}>
+                {[
+                  { value: 1, label: '😢' },
+                  { value: 2, label: '🙁' },
+                  { value: 3, label: '😐' },
+                  { value: 4, label: '🙂' },
+                  { value: 5, label: '😄' },
+                ].map((item) => (
+                  <Pressable
+                    key={`adherence-${item.value}`}
+                    style={[
+                      styles.emojiButton,
+                      {
+                        borderColor: theme.border,
+                        backgroundColor: checkinAdherence === item.value ? theme.bgAlt : 'transparent',
+                        opacity: isPlanActive ? 1 : 0.6,
+                      },
+                    ]}
+                    onPress={() => setCheckinAdherence(item.value)}
+                    disabled={!isPlanActive}
+                  >
+                    <Text style={styles.emojiLabel}>{item.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
               <Text style={[styles.meta, { color: theme.muted }]}>Energy</Text>
               <View style={styles.pillRow}>
                 {[1, 2, 3, 4, 5].map((value) => (
@@ -1486,9 +1614,11 @@ const PlanScreen = ({
                       {
                         backgroundColor: checkinEnergy === value ? theme.accent : theme.bg,
                         borderColor: theme.border,
+                        opacity: isPlanActive ? 1 : 0.6,
                       },
                     ]}
                     onPress={() => setCheckinEnergy(value)}
+                    disabled={!isPlanActive}
                   >
                     <Text
                       style={[
@@ -1511,9 +1641,11 @@ const PlanScreen = ({
                       {
                         backgroundColor: checkinHunger === value ? theme.accent : theme.bg,
                         borderColor: theme.border,
+                        opacity: isPlanActive ? 1 : 0.6,
                       },
                     ]}
                     onPress={() => setCheckinHunger(value)}
+                    disabled={!isPlanActive}
                   >
                     <Text
                       style={[
@@ -1526,18 +1658,14 @@ const PlanScreen = ({
                   </Pressable>
                 ))}
               </View>
-              <TextInput
-                style={[styles.input, styles.inputTall, { color: theme.text, borderColor: theme.border }]}
-                value={checkinConflicts}
-                onChangeText={setCheckinConflicts}
-                placeholder="Conflicts or notes (optional)"
-                placeholderTextColor={theme.muted}
-                multiline
-              />
               <View style={styles.row}>
                 <Pressable
-                  style={[styles.primaryButton, { backgroundColor: theme.accent, shadowColor: theme.shadow }]}
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: isPlanActive ? 1 : 0.6 },
+                  ]}
                   onPress={onSavePlanCheckin}
+                  disabled={!isPlanActive}
                 >
                   <Text style={styles.primaryButtonText}>Save check-in</Text>
                 </Pressable>
@@ -1553,6 +1681,9 @@ const PlanScreen = ({
                       Suggested protocol: {recentSuggestion.nextProtocol}
                     </Text>
                   ) : null}
+                  <Text style={[styles.meta, { color: theme.muted }]}>
+                    Protocol updates are suggestions only - you approve changes.
+                  </Text>
                   {recentSuggestion.action !== 'hold' ? (
                     <Pressable
                       style={[styles.secondaryButton, { borderColor: theme.border }]}
@@ -1565,6 +1696,61 @@ const PlanScreen = ({
                   ) : null}
                 </View>
               ) : null}
+            </View>
+
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="time-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Plan history</Text>
+              </View>
+              {planHistory.length === 0 ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  No previous plans yet.
+                </Text>
+              ) : (
+                planHistory.map((item) => (
+                  <View key={`plan-${item.id}`} style={[styles.planWeekRow, { borderColor: theme.border }]}>
+                    <View style={styles.planWeekHeader}>
+                      <Text style={[styles.metaStrong, { color: theme.text }]}>
+                        {CALORIE_GOALS.find((goal) => goal.key === item.goalMode)?.label ?? item.goalMode}
+                      </Text>
+                      <Text style={[styles.meta, { color: theme.muted }]}>
+                        {formatDate(item.startDate)}
+                      </Text>
+                    </View>
+                    <Text style={[styles.meta, { color: theme.muted }]}>
+                      {item.startProtocol} -> {item.targetProtocol} - {item.rampWeeks} weeks
+                    </Text>
+                    <Text style={[styles.meta, { color: theme.muted }]}>
+                      Pace: {PLAN_PACES.find((pace) => pace.key === item.targetPace)?.label ?? item.targetPace}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </View>
+
+            <View style={[styles.card, getCardStyle(theme)]}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="mail-outline" size={16} color={theme.muted} />
+                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Plan updates</Text>
+              </View>
+              {planUpdates.length === 0 ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  No updates yet.
+                </Text>
+              ) : (
+                planUpdates.map((update) => (
+                  <View
+                    key={`plan-update-${update.id}`}
+                    style={[styles.planUpdateRow, { borderColor: theme.border }]}
+                  >
+                    <Text style={[styles.meta, { color: theme.text }]}>{update.message}</Text>
+                    <Text style={[styles.microLabel, { color: theme.muted }]}>
+                      {formatDate(update.created_at)} {formatTime(update.created_at)}
+                    </Text>
+                  </View>
+                ))
+              )}
             </View>
           </>
         )}
@@ -1731,30 +1917,32 @@ const SmartToolsScreen = ({
   ifEatBusy,
   onEstimateFood,
   onClearFoodEstimate,
-  portionText,
-  setPortionText,
-  portionTarget,
-  setPortionTarget,
-  portionResult,
-  portionBusy,
-  onPortionCoach,
-  onClearPortionCoach,
+  onScanFoodPhotoSmart,
+  scanBusy,
   fridgeLimit,
   setFridgeLimit,
   fridgeIdeas,
   fridgeBusy,
   onScanFridge,
   onClearFridgeIdeas,
+  pantryItems,
+  onSaveFridgeIdea,
+  pantryPickerVisible,
+  onOpenPantryPicker,
+  onClosePantryPicker,
   goalTuningResult,
   goalTuningBusy,
   onRequestGoalTuning,
   onApplyGoalTuning,
+  autopilotResult,
+  autopilotBusy,
+  onRequestAutopilot,
+  onClearAutopilot,
+  onUpdateAutopilotItem,
+  onRemoveAutopilotItem,
+  onOpenAutopilotTimePicker,
+  onAddAutopilotItemFromPantry,
 }: ScreenProps) => {
-  const [showQuickTools, setShowQuickTools] = useState(true);
-  const [showPhotoTools, setShowPhotoTools] = useState(true);
-  const suggestedTarget =
-    dailyCalorieGoal > 0 ? Math.max(0, dailyCalorieGoal - todayCalories) : null;
-
   return (
     <ScreenShell theme={theme}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -1765,236 +1953,276 @@ const SmartToolsScreen = ({
         />
 
         <View style={[styles.card, getCardStyle(theme)]}>
-          <Pressable
-            style={styles.sectionHeaderRow}
-            onPress={() => setShowQuickTools((prev) => !prev)}
-          >
-            <View style={styles.sectionHeaderLeft}>
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="flash-outline" size={16} color={theme.muted} />
-                <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
-                  Quick estimates
-                </Text>
-              </View>
-              <Text style={[styles.sectionSubtitle, { color: theme.muted }]}>
-                If I eat this + portion coach
+          <View style={styles.sectionTitleRow}>
+            <Ionicons name="restaurant-outline" size={16} color={theme.muted} />
+            <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
+          </View>
+          <TextInput
+            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+            placeholder="Example: Turkey wrap and a latte"
+            placeholderTextColor={theme.muted}
+            value={ifEatText}
+            onChangeText={setIfEatText}
+          />
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
+              ]}
+              onPress={onEstimateFood}
+              disabled={ifEatBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {ifEatBusy ? 'Estimating...' : 'Estimate'}
               </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border, opacity: scanBusy ? 0.7 : 1 }]}
+              onPress={onScanFoodPhotoSmart}
+              disabled={scanBusy}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                {scanBusy ? 'Scanning...' : 'Scan photo'}
+              </Text>
+            </Pressable>
+            {ifEatResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearFoodEstimate}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {ifEatResult ? (
+            <View style={styles.smartResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Estimated total: {ifEatResult.totalCalories} kcal
+              </Text>
+              {ifEatResult.items.map((item, index) => (
+                <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
+                  - {item.name}
+                  {item.calories !== null && item.calories !== undefined
+                    ? ` (${item.calories} kcal)`
+                    : ''}
+                </Text>
+              ))}
+              {ifEatResult.disclaimer ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
+              ) : null}
             </View>
-            <Ionicons
-              name={showQuickTools ? 'chevron-up' : 'chevron-down'}
-              size={18}
-              color={theme.muted}
-            />
-          </Pressable>
-          {showQuickTools ? (
-            <>
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="restaurant-outline" size={16} color={theme.muted} />
-                <Text style={[styles.sectionTitle, { color: theme.muted }]}>If I eat this</Text>
-              </View>
-              <TextInput
-                style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-                placeholder="Example: Turkey wrap and a latte"
-                placeholderTextColor={theme.muted}
-                value={ifEatText}
-                onChangeText={setIfEatText}
-              />
-              <View style={styles.row}>
-                <Pressable
-                  style={[
-                    styles.primaryButton,
-                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: ifEatBusy ? 0.7 : 1 },
-                  ]}
-                  onPress={onEstimateFood}
-                  disabled={ifEatBusy}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {ifEatBusy ? 'Estimating...' : 'Estimate'}
-                  </Text>
-                </Pressable>
-                {ifEatResult ? (
-                  <Pressable
-                    style={[styles.secondaryButton, { borderColor: theme.border }]}
-                    onPress={onClearFoodEstimate}
-                  >
-                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-              {ifEatResult ? (
-                <View style={styles.smartResult}>
-                  <Text style={[styles.metaStrong, { color: theme.text }]}>
-                    Estimated total: {ifEatResult.totalCalories} kcal
-                  </Text>
-                  {ifEatResult.items.map((item, index) => (
-                    <Text key={`${item.name}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                      - {item.name}
-                      {item.calories !== null && item.calories !== undefined
-                        ? ` (${item.calories} kcal)`
-                        : ''}
-                    </Text>
-                  ))}
-                  {ifEatResult.disclaimer ? (
-                    <Text style={[styles.meta, { color: theme.muted }]}>{ifEatResult.disclaimer}</Text>
-                  ) : null}
-                </View>
-              ) : null}
-
-              <View style={[styles.smartDivider, { backgroundColor: theme.border }]} />
-
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="scale-outline" size={16} color={theme.muted} />
-                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Portion coach</Text>
-              </View>
-              <TextInput
-                style={[styles.input, { color: theme.text, borderColor: theme.border }]}
-                placeholder="Example: Bowl of pasta with tomato sauce"
-                placeholderTextColor={theme.muted}
-                value={portionText}
-                onChangeText={setPortionText}
-              />
-              <TextInput
-                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-                placeholder={suggestedTarget ? `Target kcal (e.g., ${suggestedTarget})` : 'Target kcal (optional)'}
-                placeholderTextColor={theme.muted}
-                value={portionTarget}
-                onChangeText={setPortionTarget}
-                keyboardType="numeric"
-              />
-              <View style={styles.row}>
-                <Pressable
-                  style={[
-                    styles.primaryButton,
-                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: portionBusy ? 0.7 : 1 },
-                  ]}
-                  onPress={onPortionCoach}
-                  disabled={portionBusy}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {portionBusy ? 'Coaching...' : 'Get tips'}
-                  </Text>
-                </Pressable>
-                {portionResult ? (
-                  <Pressable
-                    style={[styles.secondaryButton, { borderColor: theme.border }]}
-                    onPress={onClearPortionCoach}
-                  >
-                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-              {portionResult ? (
-                <View style={styles.smartResult}>
-                  <Text style={[styles.metaStrong, { color: theme.text }]}>
-                    Estimated: {portionResult.estimatedCalories} kcal
-                    {portionResult.targetCalories !== null && portionResult.targetCalories > 0
-                      ? ` (Target ${portionResult.targetCalories})`
-                      : ''}
-                  </Text>
-                  <Text style={[styles.meta, { color: theme.muted }]}>{portionResult.summary}</Text>
-                  {portionResult.adjustments.map((tip, index) => (
-                    <Text key={`${tip}-${index}`} style={[styles.meta, { color: theme.muted }]}>
-                      - {tip}
-                    </Text>
-                  ))}
-                </View>
-              ) : null}
-            </>
-          ) : (
-            <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
-          )}
+          ) : null}
         </View>
 
         <View style={[styles.card, getCardStyle(theme)]}>
-          <Pressable
-            style={styles.sectionHeaderRow}
-            onPress={() => setShowPhotoTools((prev) => !prev)}
-          >
-            <View style={styles.sectionHeaderLeft}>
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="camera-outline" size={16} color={theme.muted} />
-                <Text style={[styles.sectionTitle, styles.sectionTitleCompact, { color: theme.muted }]}>
-                  Photo tools
+          <View style={styles.sectionTitleRow}>
+            <Ionicons name="leaf-outline" size={16} color={theme.muted} />
+            <Text style={[styles.sectionTitle, { color: theme.muted }]}>Fridge ideas</Text>
+          </View>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Snap your fridge and get meal ideas under a calorie limit.
+          </Text>
+          <TextInput
+            style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
+            placeholder="Limit kcal (optional, default 400)"
+            placeholderTextColor={theme.muted}
+            value={fridgeLimit}
+            onChangeText={setFridgeLimit}
+            keyboardType="numeric"
+          />
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: fridgeBusy ? 0.7 : 1 },
+              ]}
+              onPress={onScanFridge}
+              disabled={fridgeBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {fridgeBusy ? 'Scanning...' : 'Scan fridge'}
+              </Text>
+            </Pressable>
+            {fridgeIdeas ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearFridgeIdeas}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {fridgeIdeas ? (
+            <View style={styles.smartResult}>
+              {fridgeIdeas.items?.length ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  Detected: {fridgeIdeas.items.join(', ')}
                 </Text>
-              </View>
-              <Text style={[styles.sectionSubtitle, { color: theme.muted }]}>
-                Fridge ideas
-              </Text>
-            </View>
-            <Ionicons
-              name={showPhotoTools ? 'chevron-up' : 'chevron-down'}
-              size={18}
-              color={theme.muted}
-            />
-          </Pressable>
-          {showPhotoTools ? (
-            <>
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="leaf-outline" size={16} color={theme.muted} />
-                <Text style={[styles.sectionTitle, { color: theme.muted }]}>Fridge ideas</Text>
-              </View>
-              <Text style={[styles.meta, { color: theme.muted }]}>
-                Snap your fridge and get meal ideas under a calorie limit.
-              </Text>
-              <TextInput
-                style={[styles.calorieInput, { color: theme.text, borderColor: theme.border }]}
-                placeholder="Limit kcal (optional, default 400)"
-                placeholderTextColor={theme.muted}
-                value={fridgeLimit}
-                onChangeText={setFridgeLimit}
-                keyboardType="numeric"
-              />
-              <View style={styles.row}>
-                <Pressable
-                  style={[
-                    styles.primaryButton,
-                    { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: fridgeBusy ? 0.7 : 1 },
-                  ]}
-                  onPress={onScanFridge}
-                  disabled={fridgeBusy}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {fridgeBusy ? 'Scanning...' : 'Scan fridge'}
-                  </Text>
-                </Pressable>
-                {fridgeIdeas ? (
-                  <Pressable
-                    style={[styles.secondaryButton, { borderColor: theme.border }]}
-                    onPress={onClearFridgeIdeas}
-                  >
-                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-              {fridgeIdeas ? (
-                <View style={styles.smartResult}>
-                  {fridgeIdeas.items?.length ? (
-                    <Text style={[styles.meta, { color: theme.muted }]}>
-                      Detected: {fridgeIdeas.items.join(', ')}
+              ) : null}
+              {fridgeIdeas.meals.map((meal, index) => {
+                const saved = pantryItems.some(
+                  (item) => item.title.trim().toLowerCase() === meal.title.trim().toLowerCase()
+                );
+                return (
+                  <View key={`${meal.title}-${index}`} style={styles.smartMeal}>
+                    <Text style={[styles.metaStrong, { color: theme.text }]}>
+                      {meal.title} - {meal.calories} kcal
                     </Text>
-                  ) : null}
-                  {fridgeIdeas.meals.map((meal, index) => (
-                    <View key={`${meal.title}-${index}`} style={styles.smartMeal}>
-                      <Text style={[styles.metaStrong, { color: theme.text }]}>
-                        {meal.title} - {meal.calories} kcal
-                      </Text>
-                      <Text style={[styles.meta, { color: theme.muted }]}>
-                        {meal.ingredients.join(', ')}
-                      </Text>
-                      {meal.notes ? (
-                        <Text style={[styles.meta, { color: theme.muted }]}>{meal.notes}</Text>
-                      ) : null}
+                    <Text style={[styles.meta, { color: theme.muted }]}>
+                      {meal.ingredients.join(', ')}
+                    </Text>
+                    {meal.notes ? (
+                      <Text style={[styles.meta, { color: theme.muted }]}>{meal.notes}</Text>
+                    ) : null}
+                    <View style={styles.inlineRow}>
+                      <Pressable
+                        style={[
+                          styles.tinyButton,
+                          { borderColor: theme.border, opacity: saved ? 0.6 : 1 },
+                        ]}
+                        onPress={() => onSaveFridgeIdea(meal)}
+                        disabled={saved}
+                      >
+                        <Text style={[styles.tinyButtonText, { color: theme.text }]}>
+                          {saved ? 'Saved' : 'Save to pantry'}
+                        </Text>
+                      </Pressable>
                     </View>
-                  ))}
-                  {fridgeIdeas.disclaimer ? (
-                    <Text style={[styles.meta, { color: theme.muted }]}>{fridgeIdeas.disclaimer}</Text>
+                  </View>
+                );
+              })}
+              {fridgeIdeas.disclaimer ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{fridgeIdeas.disclaimer}</Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+
+        <View style={[styles.card, getCardStyle(theme)]}>
+          <View style={styles.sectionTitleRow}>
+            <Ionicons name="sparkles-outline" size={16} color={theme.muted} />
+            <Text style={[styles.sectionTitle, { color: theme.muted }]}>Plan your eating window</Text>
+          </View>
+          <Text style={[styles.meta, { color: theme.muted }]}>
+            Plan your eating window with a timed mini-menu.
+          </Text>
+          {autopilotResult?.windowStart && autopilotResult.windowEnd ? (
+            <Text style={[styles.meta, { color: theme.muted }]}>
+              {autopilotResult.windowLabel ?? 'Eating window'}:{' '}
+              {formatTime(autopilotResult.windowStart)} - {formatTime(autopilotResult.windowEnd)}
+            </Text>
+          ) : null}
+          <View style={styles.row}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: autopilotBusy ? 0.7 : 1 },
+              ]}
+              onPress={onRequestAutopilot}
+              disabled={autopilotBusy}
+            >
+              <Text style={styles.primaryButtonText}>
+                {autopilotBusy ? 'Planning...' : 'Build menu'}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.secondaryButton,
+                { borderColor: theme.border, opacity: pantryItems.length > 0 ? 1 : 0.5 },
+              ]}
+              onPress={onOpenPantryPicker}
+              disabled={pantryItems.length === 0}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                Add from pantry
+              </Text>
+            </Pressable>
+            {autopilotResult ? (
+              <Pressable
+                style={[styles.secondaryButton, { borderColor: theme.border }]}
+                onPress={onClearAutopilot}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {autopilotResult ? (
+            <View style={styles.smartResult}>
+              <Text style={[styles.metaStrong, { color: theme.text }]}>
+                Total target: {autopilotResult.totalCalories} kcal
+              </Text>
+              {autopilotResult.items.length === 0 ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>No items yet.</Text>
+              ) : null}
+              {autopilotResult.items.map((item) => (
+                <View key={item.id} style={styles.autopilotItem}>
+                  <View style={styles.autopilotRow}>
+                    <Pressable
+                      style={[styles.timePill, { borderColor: theme.border }]}
+                      onPress={() => onOpenAutopilotTimePicker(item.id)}
+                    >
+                      <Text style={[styles.timePillText, { color: theme.text }]}>
+                        {item.time || 'Set time'}
+                      </Text>
+                    </Pressable>
+                    <TextInput
+                      style={[
+                        styles.autopilotInput,
+                        { color: theme.text, borderColor: theme.border },
+                      ]}
+                      value={item.title}
+                      onChangeText={(value) => onUpdateAutopilotItem(item.id, { title: value })}
+                      placeholder="Meal"
+                      placeholderTextColor={theme.muted}
+                    />
+                    <TextInput
+                      style={[
+                        styles.autopilotCalorieInput,
+                        { color: theme.text, borderColor: theme.border },
+                      ]}
+                      value={String(item.calories ?? '')}
+                      onChangeText={(value) =>
+                        onUpdateAutopilotItem(item.id, {
+                          calories: Number.isFinite(Number(value)) ? Number(value) : 0,
+                        })
+                      }
+                      keyboardType="numeric"
+                      placeholder="kcal"
+                      placeholderTextColor={theme.muted}
+                    />
+                    <Pressable
+                      style={[styles.iconButton, { borderColor: theme.border }]}
+                      onPress={() => onRemoveAutopilotItem(item.id)}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={theme.muted} />
+                    </Pressable>
+                  </View>
+                  <TextInput
+                    style={[
+                      styles.autopilotIngredients,
+                      { color: theme.text, borderColor: theme.border },
+                    ]}
+                    value={(item.ingredients ?? []).join(', ')}
+                    onChangeText={(value) =>
+                      onUpdateAutopilotItem(item.id, {
+                        ingredients: parseIngredientsInput(value),
+                      })
+                    }
+                    placeholder="Ingredients (comma separated)"
+                    placeholderTextColor={theme.muted}
+                    multiline
+                  />
+                  {item.notes ? (
+                    <Text style={[styles.meta, { color: theme.muted }]}>{item.notes}</Text>
                   ) : null}
                 </View>
+              ))}
+              {autopilotResult.disclaimer ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>{autopilotResult.disclaimer}</Text>
               ) : null}
-            </>
-          ) : (
-            <Text style={[styles.meta, { color: theme.muted }]}>Tap to expand.</Text>
-          )}
+            </View>
+          ) : null}
         </View>
 
         <View style={[styles.card, getCardStyle(theme)]}>
@@ -2005,41 +2233,97 @@ const SmartToolsScreen = ({
           <Text style={[styles.meta, { color: theme.muted }]}>
             Get a recommended fasting window based on your recent logs.
           </Text>
-          <View style={styles.row}>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: goalTuningBusy ? 0.7 : 1 },
-              ]}
-              onPress={onRequestGoalTuning}
-              disabled={goalTuningBusy}
-            >
-              <Text style={styles.primaryButtonText}>
-                {goalTuningBusy ? 'Analyzing...' : 'Get recommendation'}
-              </Text>
-            </Pressable>
-            {goalTuningResult ? (
+          <View style={[styles.goalBox, { borderColor: theme.border }]}>
+            <Text style={[styles.metaStrong, { color: theme.text }]}>Recommendation</Text>
+            <View style={styles.goalActionRow}>
               <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.border }]}
-                onPress={onApplyGoalTuning}
+                style={[
+                  styles.primaryButton,
+                  { backgroundColor: theme.accent, shadowColor: theme.shadow, opacity: goalTuningBusy ? 0.7 : 1 },
+                ]}
+                onPress={onRequestGoalTuning}
+                disabled={goalTuningBusy}
               >
-                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Use recommendation</Text>
+                <Text style={styles.primaryButtonText}>
+                  {goalTuningBusy ? 'Analyzing...' : 'Get'}
+                </Text>
               </Pressable>
-            ) : null}
-          </View>
-          {goalTuningResult ? (
-            <View style={styles.smartResult}>
-              <Text style={[styles.metaStrong, { color: theme.text }]}>
-                Recommended: {goalTuningResult.recommendedProtocol}
-              </Text>
-              <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.rationale}</Text>
-              {goalTuningResult.note ? (
-                <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.note}</Text>
+              {goalTuningResult ? (
+                <Pressable
+                  style={[styles.secondaryButton, { borderColor: theme.border }]}
+                  onPress={onApplyGoalTuning}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Apply</Text>
+                </Pressable>
               ) : null}
             </View>
-          ) : null}
+            {goalTuningResult ? (
+              <View style={styles.smartResult}>
+                <Text style={[styles.metaStrong, { color: theme.text }]}>
+                  Recommended: {goalTuningResult.recommendedProtocol}
+                </Text>
+                <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.rationale}</Text>
+                {goalTuningResult.note ? (
+                  <Text style={[styles.meta, { color: theme.muted }]}>{goalTuningResult.note}</Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
         </View>
       </ScrollView>
+
+      <Modal visible={pantryPickerVisible} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={onClosePantryPicker}>
+          <Pressable style={[styles.modalContent, getCardStyle(theme)]} onPress={() => {}}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>Pantry ideas</Text>
+            <ScrollView style={styles.pantryList} keyboardShouldPersistTaps="handled">
+              {pantryItems.length === 0 ? (
+                <Text style={[styles.meta, { color: theme.muted }]}>
+                  Save fridge ideas to build a pantry list.
+                </Text>
+              ) : (
+                pantryItems.map((item) => (
+                  <View key={item.id} style={styles.pantryRow}>
+                    <View style={styles.pantryText}>
+                      <Text style={[styles.metaStrong, { color: theme.text }]}>
+                        {item.title}
+                      </Text>
+                      <Text style={[styles.meta, { color: theme.muted }]}>
+                        {item.calories} kcal
+                      </Text>
+                      {item.ingredients.length > 0 ? (
+                        <Text style={[styles.meta, { color: theme.muted }]}>
+                          {item.ingredients.join(', ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Pressable
+                      style={[
+                        styles.secondaryButton,
+                        { borderColor: theme.border },
+                      ]}
+                      onPress={() => {
+                        onAddAutopilotItemFromPantry(item);
+                        onClosePantryPicker();
+                      }}
+                    >
+                      <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                        Add
+                      </Text>
+                    </Pressable>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.border }]}
+              onPress={onClosePantryPicker}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </ScreenShell>
   );
 };
@@ -2645,8 +2929,14 @@ export default function App() {
   const [fridgeLimit, setFridgeLimit] = useState('');
   const [fridgeIdeas, setFridgeIdeas] = useState<FridgeIdeasResult | null>(null);
   const [fridgeBusy, setFridgeBusy] = useState(false);
+  const [pantryItems, setPantryItems] = useState<PantryItem[]>([]);
+  const [pantryPickerVisible, setPantryPickerVisible] = useState(false);
   const [autopilotResult, setAutopilotResult] = useState<AutopilotResult | null>(null);
   const [autopilotBusy, setAutopilotBusy] = useState(false);
+  const [autopilotTimePicker, setAutopilotTimePicker] = useState<{
+    itemId: string;
+    value: Date;
+  } | null>(null);
   const [rescueResult, setRescueResult] = useState<CravingRescueResult | null>(null);
   const [rescueBusy, setRescueBusy] = useState(false);
   const [rescueVisible, setRescueVisible] = useState(false);
@@ -2665,6 +2955,7 @@ export default function App() {
   const [scanThumbPath, setScanThumbPath] = useState<string | null>(null);
   const [scanTotalCalories, setScanTotalCalories] = useState<number | null>(null);
   const [scanVisible, setScanVisible] = useState(false);
+  const [scanMode, setScanMode] = useState<'note' | 'smart'>('note');
   const [scanRecalcBusy, setScanRecalcBusy] = useState(false);
   const [editNote, setEditNote] = useState<EatingNote | null>(null);
   const [editNoteText, setEditNoteText] = useState('');
@@ -2678,6 +2969,8 @@ export default function App() {
   const [plan, setPlan] = useState<AdaptivePlan | null>(null);
   const [planWeeks, setPlanWeeks] = useState<AdaptivePlanWeek[]>([]);
   const [planCheckins, setPlanCheckins] = useState<PlanCheckIn[]>([]);
+  const [planHistory, setPlanHistory] = useState<AdaptivePlan[]>([]);
+  const [planUpdates, setPlanUpdates] = useState<PlanUpdate[]>([]);
   const [planBuilderVisible, setPlanBuilderVisible] = useState(false);
   const [planGoalMode, setPlanGoalMode] = useState<CalorieGoalMode>('lose');
   const [planPace, setPlanPace] = useState<PlanPace>('gentle');
@@ -2685,10 +2978,9 @@ export default function App() {
   const [planRampWeeks, setPlanRampWeeks] = useState(4);
   const [planMinEatingHours, setPlanMinEatingHours] = useState(8);
   const [planBusy, setPlanBusy] = useState(false);
-  const [checkinAdherence, setCheckinAdherence] = useState('80');
+  const [checkinAdherence, setCheckinAdherence] = useState(3);
   const [checkinEnergy, setCheckinEnergy] = useState(3);
   const [checkinHunger, setCheckinHunger] = useState(3);
-  const [checkinConflicts, setCheckinConflicts] = useState('');
   const [checkinSuggestion, setCheckinSuggestion] = useState<PlanSuggestion | null>(null);
 
   useEffect(() => {
@@ -2715,6 +3007,7 @@ export default function App() {
       accent: '#2CB7B3',
       border: '#DCE3EB',
       shadow: '#7B8896',
+      panic: '#E2534A',
     };
     const darkTheme: Theme = {
       mode: 'dark',
@@ -2726,6 +3019,7 @@ export default function App() {
       accent: '#2CB7B3',
       border: '#27364C',
       shadow: '#000000',
+      panic: '#E25D54',
     };
     if (settings.themePreference === 'system') {
       return resolvedScheme === 'dark' ? darkTheme : lightTheme;
@@ -2876,6 +3170,40 @@ export default function App() {
     const active = sessionsResult.find((session) => session.end_time === null) ?? null;
     setActiveSession(active);
     await loadPlanData();
+    await loadPantryItems();
+  };
+
+  const loadPantryItems = async () => {
+    const rows = await getAll<{
+      id: number;
+      title: string;
+      calories: number;
+      ingredients_json: string | null;
+      notes: string | null;
+      created_at: number;
+    }>('SELECT * FROM pantry_items ORDER BY created_at DESC;');
+    const parsed = rows.map((row) => {
+      let ingredients: string[] = [];
+      if (row.ingredients_json) {
+        try {
+          const parsedList = JSON.parse(row.ingredients_json);
+          if (Array.isArray(parsedList)) {
+            ingredients = parsedList.map((item) => String(item));
+          }
+        } catch (error) {
+          ingredients = [];
+        }
+      }
+      return {
+        id: row.id,
+        title: row.title,
+        calories: row.calories,
+        ingredients,
+        notes: row.notes,
+        createdAt: row.created_at,
+      };
+    });
+    setPantryItems(parsed);
   };
 
   const loadPlanData = async () => {
@@ -2891,40 +3219,89 @@ export default function App() {
       status: string;
       created_at: number;
       updated_at: number;
-    }>('SELECT * FROM adaptive_plans WHERE status = ? ORDER BY start_date DESC LIMIT 1;', [
-      'active',
-    ]);
+    }>(
+      `SELECT * FROM adaptive_plans
+       WHERE status IN ('active', 'paused', 'draft')
+       ORDER BY CASE
+         WHEN status = 'active' THEN 0
+         WHEN status = 'paused' THEN 1
+         ELSE 2
+       END, updated_at DESC
+       LIMIT 1;`
+    );
     if (rows.length === 0) {
       setPlan(null);
       setPlanWeeks([]);
       setPlanCheckins([]);
-      return;
+      setPlanUpdates([]);
+    } else {
+      const row = rows[0];
+      const loadedPlan: AdaptivePlan = {
+        id: row.id,
+        goalMode: row.goal_mode,
+        targetPace: row.target_pace,
+        startProtocol: row.start_protocol,
+        targetProtocol: row.target_protocol,
+        minEatingHours: row.min_eating_hours,
+        rampWeeks: row.ramp_weeks,
+        startDate: row.start_date,
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+      setPlan(loadedPlan);
+      const weekRows = await getAll<AdaptivePlanWeek>(
+        'SELECT * FROM adaptive_plan_weeks WHERE plan_id = ? ORDER BY week_index ASC;',
+        [loadedPlan.id]
+      );
+      setPlanWeeks(weekRows);
+      const checkinRows = await getAll<PlanCheckIn>(
+        'SELECT * FROM adaptive_plan_checkins WHERE plan_id = ? ORDER BY created_at DESC;',
+        [loadedPlan.id]
+      );
+      setPlanCheckins(checkinRows);
+      const updateRows = await getAll<PlanUpdate>(
+        'SELECT * FROM adaptive_plan_updates WHERE plan_id = ? ORDER BY created_at DESC LIMIT 8;',
+        [loadedPlan.id]
+      );
+      setPlanUpdates(updateRows);
     }
-    const row = rows[0];
-    const loadedPlan: AdaptivePlan = {
-      id: row.id,
-      goalMode: row.goal_mode,
-      targetPace: row.target_pace,
-      startProtocol: row.start_protocol,
-      targetProtocol: row.target_protocol,
-      minEatingHours: row.min_eating_hours,
-      rampWeeks: row.ramp_weeks,
-      startDate: row.start_date,
-      status: row.status,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-    setPlan(loadedPlan);
-    const weekRows = await getAll<AdaptivePlanWeek>(
-      'SELECT * FROM adaptive_plan_weeks WHERE plan_id = ? ORDER BY week_index ASC;',
-      [loadedPlan.id]
+
+    const historyRows = await getAll<{
+      id: number;
+      goal_mode: CalorieGoalMode;
+      target_pace: PlanPace;
+      start_protocol: string;
+      target_protocol: string;
+      min_eating_hours: number;
+      ramp_weeks: number;
+      start_date: number;
+      status: string;
+      created_at: number;
+      updated_at: number;
+    }>('SELECT * FROM adaptive_plans WHERE status = ? ORDER BY updated_at DESC;', ['archived']);
+    setPlanHistory(
+      historyRows.map((row) => ({
+        id: row.id,
+        goalMode: row.goal_mode,
+        targetPace: row.target_pace,
+        startProtocol: row.start_protocol,
+        targetProtocol: row.target_protocol,
+        minEatingHours: row.min_eating_hours,
+        rampWeeks: row.ramp_weeks,
+        startDate: row.start_date,
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
     );
-    setPlanWeeks(weekRows);
-    const checkinRows = await getAll<PlanCheckIn>(
-      'SELECT * FROM adaptive_plan_checkins WHERE plan_id = ? ORDER BY created_at DESC;',
-      [loadedPlan.id]
+  };
+
+  const addPlanUpdate = async (planId: number, message: string) => {
+    await run(
+      'INSERT INTO adaptive_plan_updates (plan_id, message, created_at) VALUES (?, ?, ?);',
+      [planId, message, Date.now()]
     );
-    setPlanCheckins(checkinRows);
   };
 
   const clampProtocolForMinEating = (protocolKey: string, minEatingHours: number) => {
@@ -3066,7 +3443,10 @@ export default function App() {
           : localPlan.weeks;
 
       const nowTs = Date.now();
-      await run('UPDATE adaptive_plans SET status = ? WHERE status = ?;', ['archived', 'active']);
+      await run(
+        "UPDATE adaptive_plans SET status = ? WHERE status IN ('active', 'paused');",
+        ['archived']
+      );
       await run(
         `INSERT INTO adaptive_plans (
           goal_mode,
@@ -3088,25 +3468,27 @@ export default function App() {
           planMinEatingHours,
           weeks.length,
           nowTs,
-          'active',
+          'draft',
           nowTs,
           nowTs,
         ]
       );
       const planRow = await getAll<{ id: number }>(
         'SELECT id FROM adaptive_plans WHERE status = ? ORDER BY id DESC LIMIT 1;',
-        ['active']
+        ['draft']
       );
       const planId = planRow[0]?.id;
       if (!planId) throw new Error('Plan creation failed.');
+      await addPlanUpdate(planId, 'Plan created (draft). Activate to begin.');
       await run('DELETE FROM adaptive_plan_weeks WHERE plan_id = ?;', [planId]);
-      for (const week of weeks) {
+      for (let index = 0; index < weeks.length; index += 1) {
+        const week = weeks[index];
         await run(
           `INSERT INTO adaptive_plan_weeks (plan_id, week_index, protocol_key, daily_calories, notes)
            VALUES (?, ?, ?, ?, ?);`,
           [
             planId,
-            week.weekIndex,
+            index,
             week.protocolKey,
             week.dailyCalories ?? null,
             week.notes ?? null,
@@ -3131,6 +3513,67 @@ export default function App() {
       setPlanMinEatingHours(plan.minEatingHours);
     }
     setPlanBuilderVisible(true);
+  };
+
+  const togglePlanStatus = async () => {
+    if (!plan) return;
+    const nextStatus = plan.status === 'paused' ? 'active' : 'paused';
+    await run('UPDATE adaptive_plans SET status = ?, updated_at = ? WHERE id = ?;', [
+      nextStatus,
+      Date.now(),
+      plan.id,
+    ]);
+    await addPlanUpdate(
+      plan.id,
+      nextStatus === 'paused' ? 'Plan paused.' : 'Plan resumed.'
+    );
+    await loadPlanData();
+  };
+
+  const deactivatePlan = async () => {
+    if (!plan) return;
+    if (plan.status === 'draft') return;
+    const nowTs = Date.now();
+    await run('UPDATE adaptive_plans SET status = ?, updated_at = ? WHERE id = ?;', [
+      'draft',
+      nowTs,
+      plan.id,
+    ]);
+    await addPlanUpdate(plan.id, 'Plan deactivated.');
+    await loadPlanData();
+  };
+
+  const clearPlan = async () => {
+    Alert.alert(
+      'Clear plan',
+      'This will delete all plans, weeks, check-ins, and updates. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await run('DELETE FROM adaptive_plan_updates;');
+            await run('DELETE FROM adaptive_plan_checkins;');
+            await run('DELETE FROM adaptive_plan_weeks;');
+            await run('DELETE FROM adaptive_plans;');
+            await loadPlanData();
+          },
+        },
+      ]
+    );
+  };
+
+  const activatePlan = async () => {
+    if (!plan) return;
+    if (plan.status !== 'draft') return;
+    const nowTs = Date.now();
+    await run(
+      'UPDATE adaptive_plans SET status = ?, start_date = ?, updated_at = ? WHERE id = ?;',
+      ['active', nowTs, nowTs, plan.id]
+    );
+    await addPlanUpdate(plan.id, 'Plan activated.');
+    await loadPlanData();
   };
 
   const getCurrentPlanWeekIndex = (planItem: AdaptivePlan | null) => {
@@ -3181,11 +3624,11 @@ export default function App() {
 
   const savePlanCheckin = async () => {
     if (!plan) return;
-    const adherencePctValue = Number(checkinAdherence);
-    if (!Number.isFinite(adherencePctValue) || adherencePctValue < 0 || adherencePctValue > 100) {
-      Alert.alert('Check-in', 'Adherence must be between 0 and 100.');
+    if (plan.status !== 'active') {
+      Alert.alert('Check-in', 'Activate your plan to submit check-ins.');
       return;
     }
+    const adherencePctValue = Math.min(100, Math.max(20, checkinAdherence * 20));
     const currentWeekIndex = getCurrentPlanWeekIndex(plan);
     const currentWeek = planWeeks.find((week) => week.week_index === currentWeekIndex);
     const currentProtocol = currentWeek?.protocol_key ?? plan.startProtocol;
@@ -3214,13 +3657,17 @@ export default function App() {
         Math.round(adherencePctValue),
         checkinEnergy,
         checkinHunger,
-        checkinConflicts.trim() || null,
+        null,
         JSON.stringify(suggestion),
         nowTs,
       ]
     );
     setCheckinSuggestion(suggestion);
     setCheckinConflicts('');
+    await addPlanUpdate(
+      plan.id,
+      `Check-in saved: ${Math.round(adherencePctValue)}% adherence.`
+    );
     await loadPlanData();
   };
 
@@ -3231,38 +3678,49 @@ export default function App() {
     const currentWeek = planWeeks.find((week) => week.week_index === currentWeekIndex);
     const baseProtocol = currentWeek?.protocol_key ?? plan.startProtocol;
     const nextProtocol = checkinSuggestion.nextProtocol ?? baseProtocol;
-    const baseIndex = getProtocolIndex(baseProtocol);
-    const nextIndex = getProtocolIndex(nextProtocol);
-    const delta = Math.max(-1, Math.min(1, nextIndex - baseIndex));
+    const remainingWeeks = Math.max(1, plan.rampWeeks - currentWeekIndex);
+    const rebuilt = buildPlanWeeks(
+      nextProtocol,
+      plan.goalMode,
+      plan.targetPace,
+      remainingWeeks,
+      plan.minEatingHours,
+      settings.dailyCalorieGoal
+    );
 
-    const updatedWeeks = planWeeks.map((week) => {
-      if (week.week_index < currentWeekIndex) return week;
-      const currentIndex = getProtocolIndex(week.protocol_key);
-      const updatedIndex = Math.max(
-        0,
-        Math.min(PROTOCOL_ORDER.length - 1, currentIndex + delta)
-      );
-      const updatedProtocol = clampProtocolForMinEating(
-        PROTOCOL_ORDER[updatedIndex],
-        plan.minEatingHours
-      );
-      return {
-        ...week,
-        protocol_key: updatedProtocol,
-      };
-    });
-
-    for (const week of updatedWeeks) {
+    await run('DELETE FROM adaptive_plan_weeks WHERE plan_id = ? AND week_index >= ?;', [
+      plan.id,
+      currentWeekIndex,
+    ]);
+    for (let index = 0; index < rebuilt.weeks.length; index += 1) {
+      const week = rebuilt.weeks[index];
       await run(
-        'UPDATE adaptive_plan_weeks SET protocol_key = ? WHERE id = ?;',
-        [week.protocol_key, week.id]
+        `INSERT INTO adaptive_plan_weeks (plan_id, week_index, protocol_key, daily_calories, notes)
+         VALUES (?, ?, ?, ?, ?);`,
+        [
+          plan.id,
+          currentWeekIndex + index,
+          week.protocolKey,
+          week.dailyCalories ?? null,
+          week.notes ?? null,
+        ]
       );
     }
-    await run('UPDATE adaptive_plans SET updated_at = ? WHERE id = ?;', [
-      Date.now(),
+    await run(
+      'UPDATE adaptive_plans SET start_protocol = ?, target_protocol = ?, updated_at = ? WHERE id = ?;',
+      [
+        nextProtocol,
+        rebuilt.targetProtocol,
+        Date.now(),
+        plan.id,
+      ]
+    );
+    await addPlanUpdate(
       plan.id,
-    ]);
+      `Plan adjusted: ${checkinSuggestion.action.replace('_', ' ')}.`
+    );
     await loadPlanData();
+    Alert.alert('Plan adjusted', 'Your plan has been recalculated.');
   };
 
   const purgeHistory = async (days: number) => {
@@ -3570,8 +4028,8 @@ export default function App() {
       );
     });
 
-  const addPhotoNote = async () => {
-    if (activeSession) {
+  const addPhotoNote = async (allowDuringFasting = false, mode: 'note' | 'smart' = 'note') => {
+    if (activeSession && !allowDuringFasting) {
       Alert.alert('Fasting in progress', 'Photo notes can be added during eating windows.');
       return;
     }
@@ -3611,13 +4069,14 @@ export default function App() {
             });
       if (result.canceled || !result.assets?.[0]?.uri) return;
       const asset = result.assets[0];
+      const normalizedAsset = await normalizeImageAsset(asset);
       setScanStatus('Analyzing photo...');
 
       const formData = new FormData();
       formData.append('image', {
-        uri: asset.uri,
-        name: 'food.jpg',
-        type: 'image/jpeg',
+        uri: normalizedAsset.uri,
+        name: normalizedAsset.name,
+        type: normalizedAsset.type,
       } as unknown as Blob);
       formData.append('unitSystem', settings.unitSystem);
 
@@ -3657,6 +4116,7 @@ export default function App() {
           : [{ name: '', portion: '', calories: null, count: null }]
       );
       setScanTotalCalories(totalCalories);
+      setScanMode(mode);
       setScanVisible(true);
       setScanStatus('Review the estimate before saving.');
     } catch (error) {
@@ -3794,12 +4254,13 @@ export default function App() {
             });
       if (result.canceled || !result.assets?.[0]?.uri) return;
       const asset = result.assets[0];
+      const normalizedAsset = await normalizeImageAsset(asset);
 
       const formData = new FormData();
       formData.append('image', {
-        uri: asset.uri,
-        name: 'fridge.jpg',
-        type: 'image/jpeg',
+        uri: normalizedAsset.uri,
+        name: normalizedAsset.name,
+        type: normalizedAsset.type,
       } as unknown as Blob);
       formData.append('calorieLimit', String(suggestedLimit));
 
@@ -3825,18 +4286,70 @@ export default function App() {
     setFridgeIdeas(null);
   };
 
+  const saveFridgeIdea = async (meal: FridgeMealIdea) => {
+    const trimmedTitle = meal.title.trim();
+    if (!trimmedTitle) return;
+    const exists = pantryItems.some(
+      (item) => item.title.trim().toLowerCase() === trimmedTitle.toLowerCase()
+    );
+    if (exists) return;
+    await run(
+      'INSERT INTO pantry_items (title, calories, ingredients_json, notes, created_at) VALUES (?, ?, ?, ?, ?);',
+      [
+        trimmedTitle,
+        Math.max(0, Math.round(meal.calories || 0)),
+        JSON.stringify(meal.ingredients ?? []),
+        meal.notes ?? null,
+        Date.now(),
+      ]
+    );
+    await loadPantryItems();
+  };
+
+  const resolveAutopilotWindow = () => {
+    const nowTs = Date.now();
+    const eatingMs = Math.max(1, protocol.eatingHours) * 3600 * 1000;
+    if (activeSession) {
+      const start =
+        typeof expectedEnd === 'number'
+          ? expectedEnd
+          : activeSession.start_time + protocol.fastingHours * 3600 * 1000;
+      return { start, end: start + eatingMs, label: 'Next eating window' };
+    }
+    if (currentWindowStart !== null) {
+      const start = nowTs > currentWindowStart ? nowTs : currentWindowStart;
+      const end = start + eatingMs;
+      return { start, end, label: 'Remaining eating window' };
+    }
+    return { start: nowTs, end: nowTs + eatingMs, label: 'First eating window' };
+  };
+
+  const applyAutopilotSchedule = (
+    items: AutopilotItem[],
+    windowStart: number,
+    windowEnd: number
+  ) => {
+    if (!items.length) return items;
+    const windowMs = Math.max(30 * 60000, windowEnd - windowStart);
+    const step = windowMs / (items.length + 1);
+    return items.map((item, index) => {
+      const timeMs = Math.round(windowStart + step * (index + 1));
+      return {
+        ...item,
+        timeMs,
+        time: formatTime(timeMs),
+      };
+    });
+  };
+
+
   const requestAutopilot = async () => {
     if (!FOOD_API_URL) {
       Alert.alert('Autopilot', 'Set EXPO_PUBLIC_FOOD_API_URL to use smart tools.');
       return;
     }
-    if (activeSession) {
-      Alert.alert('Autopilot', 'Autopilot is available during eating windows.');
-      return;
-    }
-    const remainingMinutes = eatingWindowRemainingMs
-      ? Math.max(15, Math.round(eatingWindowRemainingMs / 60000))
-      : Math.max(15, protocol.eatingHours * 60);
+    const window = resolveAutopilotWindow();
+    const remainingMinutes = Math.max(15, Math.round((window.end - window.start) / 60000));
     const remainingCalories =
       settings.dailyCalorieGoal > 0
         ? Math.max(0, settings.dailyCalorieGoal - todayCalories)
@@ -3862,7 +4375,29 @@ export default function App() {
         throw new Error(detail || 'Autopilot failed.');
       }
       const data = (await response.json()) as AutopilotResult;
-      setAutopilotResult(data);
+      const baseItems = Array.isArray(data.items) ? data.items : [];
+      const hydratedItems = baseItems.map((item, index) => ({
+        id: `auto-${Date.now()}-${index}`,
+        time: item.time ?? '',
+        timeMs: window.start,
+        title: item.title?.trim() || 'Meal',
+        calories: Math.max(0, Math.round(Number(item.calories) || 0)),
+        notes: item.notes,
+        ingredients: Array.isArray(item.ingredients) ? item.ingredients : [],
+      }));
+      const scheduledItems = applyAutopilotSchedule(hydratedItems, window.start, window.end);
+      const totalCalories = scheduledItems.reduce(
+        (sum, item) => sum + (Number(item.calories) || 0),
+        0
+      );
+      setAutopilotResult({
+        items: scheduledItems,
+        totalCalories: totalCalories || data.totalCalories || 0,
+        disclaimer: data.disclaimer,
+        windowStart: window.start,
+        windowEnd: window.end,
+        windowLabel: window.label,
+      });
     } catch (error) {
       Alert.alert('Autopilot failed', String(error));
     } finally {
@@ -3872,6 +4407,100 @@ export default function App() {
 
   const clearAutopilot = () => {
     setAutopilotResult(null);
+  };
+
+  const updateAutopilotItem = (itemId: string, updates: Partial<AutopilotItem>) => {
+    setAutopilotResult((prev) => {
+      if (!prev) return prev;
+      const items = prev.items.map((item) =>
+        item.id === itemId ? { ...item, ...updates } : item
+      );
+      const totalCalories = items.reduce(
+        (sum, item) => sum + (Number(item.calories) || 0),
+        0
+      );
+      return { ...prev, items, totalCalories };
+    });
+  };
+
+  const removeAutopilotItem = (itemId: string) => {
+    setAutopilotResult((prev) => {
+      if (!prev) return prev;
+      const remaining = prev.items.filter((item) => item.id !== itemId);
+      const windowStart = prev.windowStart ?? Date.now();
+      const windowEnd =
+        prev.windowEnd ?? windowStart + Math.max(1, protocol.eatingHours) * 3600 * 1000;
+      const scheduled = applyAutopilotSchedule(remaining, windowStart, windowEnd);
+      const totalCalories = scheduled.reduce(
+        (sum, item) => sum + (Number(item.calories) || 0),
+        0
+      );
+      return { ...prev, items: scheduled, totalCalories };
+    });
+  };
+
+  const openAutopilotTimePicker = (itemId: string) => {
+    if (!autopilotResult) return;
+    const item = autopilotResult.items.find((entry) => entry.id === itemId);
+    if (!item) return;
+    setAutopilotTimePicker({
+      itemId,
+      value: new Date(item.timeMs || Date.now()),
+    });
+  };
+
+  const applyAutopilotTime = (itemId: string, selected: Date) => {
+    setAutopilotResult((prev) => {
+      if (!prev) return prev;
+      const windowStart = prev.windowStart ?? Date.now();
+      const windowEnd =
+        prev.windowEnd ?? windowStart + Math.max(1, protocol.eatingHours) * 3600 * 1000;
+      const baseDate = new Date(windowStart);
+      const timeCandidate = new Date(baseDate);
+      timeCandidate.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+      const clampedMs = Math.min(
+        windowEnd - 5 * 60000,
+        Math.max(windowStart, timeCandidate.getTime())
+      );
+      const items = prev.items.map((item) =>
+        item.id === itemId
+          ? { ...item, timeMs: clampedMs, time: formatTime(clampedMs) }
+          : item
+      );
+      return { ...prev, items };
+    });
+  };
+
+  const addAutopilotItemFromPantry = (item: PantryItem) => {
+    setAutopilotResult((prev) => {
+      const window =
+        prev?.windowStart && prev?.windowEnd
+          ? { start: prev.windowStart, end: prev.windowEnd, label: prev.windowLabel ?? 'Window' }
+          : resolveAutopilotWindow();
+      const nextItem: AutopilotItem = {
+        id: `pantry-${item.id}-${Date.now()}`,
+        time: '',
+        timeMs: window.start,
+        title: item.title,
+        calories: Math.max(0, Math.round(item.calories || 0)),
+        notes: item.notes ?? undefined,
+        ingredients: item.ingredients ?? [],
+      };
+      const items = prev?.items ? [...prev.items, nextItem] : [nextItem];
+      const scheduled = applyAutopilotSchedule(items, window.start, window.end);
+      const totalCalories = scheduled.reduce(
+        (sum, entry) => sum + (Number(entry.calories) || 0),
+        0
+      );
+      return {
+        items: scheduled,
+        totalCalories,
+        disclaimer: prev?.disclaimer,
+        windowStart: window.start,
+        windowEnd: window.end,
+        windowLabel: window.label,
+      };
+    });
   };
 
   const requestRescue = async (skipApiCheck?: boolean) => {
@@ -4091,6 +4720,10 @@ export default function App() {
     setScanItems(next);
   };
 
+  const addPhotoNoteSmart = async () => {
+    await addPhotoNote(true, 'smart');
+  };
+
   const removeScanItem = (index: number) => {
     if (!scanItems) return;
     const next = scanItems.filter((_, itemIndex) => itemIndex !== index);
@@ -4115,6 +4748,13 @@ export default function App() {
     setScanTotalCalories(null);
     setScanVisible(false);
     await refreshData();
+  };
+
+  const closeScanModal = () => {
+    setScanItems(null);
+    setScanThumbPath(null);
+    setScanTotalCalories(null);
+    setScanVisible(false);
   };
 
   const protocol = getProtocolDetails(settings);
@@ -4333,6 +4973,7 @@ export default function App() {
     }
     updateSetting('protocolKey', recommended);
     setGoalTuningResult(null);
+    Alert.alert('Goal tuning', 'Recommended window applied.');
   };
 
   const nextFastStartMs =
@@ -4418,6 +5059,11 @@ export default function App() {
     fridgeBusy,
     onScanFridge: scanFridgeIdeas,
     onClearFridgeIdeas: clearFridgeIdeas,
+    pantryItems,
+    onSaveFridgeIdea: saveFridgeIdea,
+    pantryPickerVisible,
+    onOpenPantryPicker: () => setPantryPickerVisible(true),
+    onClosePantryPicker: () => setPantryPickerVisible(false),
     goalTuningResult,
     goalTuningBusy,
     onRequestGoalTuning: requestGoalTuning,
@@ -4427,6 +5073,7 @@ export default function App() {
     onRequestNotificationPermissions: requestNotificationPermissions,
     onSendTestReminder: sendTestReminder,
     onScanFoodPhoto: addPhotoNote,
+    onScanFoodPhotoSmart: addPhotoNoteSmart,
     scanBusy,
     scanStatus,
     onDeleteNote: deleteNote,
@@ -4437,6 +5084,10 @@ export default function App() {
     autopilotBusy,
     onRequestAutopilot: requestAutopilot,
     onClearAutopilot: clearAutopilot,
+    onUpdateAutopilotItem: updateAutopilotItem,
+    onRemoveAutopilotItem: removeAutopilotItem,
+    onOpenAutopilotTimePicker: openAutopilotTimePicker,
+    onAddAutopilotItemFromPantry: addAutopilotItemFromPantry,
     rescueResult,
     rescueBusy,
     onRequestRescue: requestRescue,
@@ -4445,6 +5096,7 @@ export default function App() {
     plan,
     planWeeks,
     planCheckins,
+    planUpdates,
     planBuilderVisible,
     planGoalMode,
     setPlanGoalMode,
@@ -4466,11 +5118,14 @@ export default function App() {
     setCheckinEnergy,
     checkinHunger,
     setCheckinHunger,
-    checkinConflicts,
-    setCheckinConflicts,
     checkinSuggestion,
     onSavePlanCheckin: savePlanCheckin,
     onApplyPlanSuggestion: applyPlanSuggestion,
+    onTogglePlanStatus: togglePlanStatus,
+    planHistory,
+    onActivatePlan: activatePlan,
+    onDeactivatePlan: deactivatePlan,
+    onClearPlan: clearPlan,
   };
 
   if (!ready || !fontsLoaded) {
@@ -4640,6 +5295,19 @@ export default function App() {
           }}
         />
       ) : null}
+      {autopilotTimePicker ? (
+        <DateTimePicker
+          value={autopilotTimePicker.value}
+          mode="time"
+          display="default"
+          onChange={(_, date) => {
+            if (date) {
+              applyAutopilotTime(autopilotTimePicker.itemId, date);
+            }
+            setAutopilotTimePicker(null);
+          }}
+        />
+      ) : null}
 
       <Modal visible={scanVisible} animationType="slide" transparent>
         <Pressable style={styles.modalBackdrop} onPress={Keyboard.dismiss}>
@@ -4758,23 +5426,37 @@ export default function App() {
                 </Pressable>
               </View>
             <View style={styles.row}>
-              <Pressable
-                style={[
-                  styles.primaryButton,
-                  { backgroundColor: theme.accent, shadowColor: theme.shadow },
-                ]}
-                onPress={saveScanResult}
-              >
-                <Text style={styles.primaryButtonText}>Save</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.border }]}
-                onPress={() => setScanVisible(false)}
-              >
-                <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
-                  Cancel
-                </Text>
-              </Pressable>
+              {scanMode === 'smart' ? (
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    { backgroundColor: theme.accent, shadowColor: theme.shadow },
+                  ]}
+                  onPress={closeScanModal}
+                >
+                  <Text style={styles.primaryButtonText}>OK</Text>
+                </Pressable>
+              ) : (
+                <>
+                  <Pressable
+                    style={[
+                      styles.primaryButton,
+                      { backgroundColor: theme.accent, shadowColor: theme.shadow },
+                    ]}
+                    onPress={saveScanResult}
+                  >
+                    <Text style={styles.primaryButtonText}>Save</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.secondaryButton, { borderColor: theme.border }]}
+                    onPress={closeScanModal}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: theme.text }]}>
+                      Cancel
+                    </Text>
+                  </Pressable>
+                </>
+              )}
             </View>
             </Pressable>
           </KeyboardAvoidingView>
@@ -5369,6 +6051,75 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  planDayRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 6,
+    marginTop: 8,
+  },
+  fastMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  planStatusCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 10,
+    gap: 6,
+  },
+  planActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  planDayDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  planUpdateRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    gap: 6,
+  },
+  emojiRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  emojiButton: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emojiLabel: {
+    fontSize: 18,
+  },
+  goalBox: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 10,
+    gap: 8,
+  },
+  goalActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
   smartBlock: {
     marginTop: 12,
   },
@@ -5383,6 +6134,73 @@ const styles = StyleSheet.create({
   },
   smartMeal: {
     marginTop: 8,
+    gap: 2,
+  },
+  autopilotItem: {
+    marginTop: 10,
+    gap: 8,
+  },
+  autopilotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  autopilotInput: {
+    flex: 1,
+    minWidth: 140,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    minHeight: 44,
+    fontFamily: 'Manrope_500Medium',
+  },
+  autopilotCalorieInput: {
+    width: 80,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    minHeight: 44,
+    textAlign: 'center',
+    fontFamily: 'Manrope_600SemiBold',
+  },
+  autopilotIngredients: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    minHeight: 48,
+    fontFamily: 'Manrope_500Medium',
+  },
+  timePill: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  timePillText: {
+    fontSize: 12,
+    fontFamily: 'Manrope_600SemiBold',
+  },
+  pantryList: {
+    maxHeight: 320,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  pantryRow: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  pantryText: {
+    flex: 1,
     gap: 2,
   },
   goalResult: {
@@ -5429,13 +6247,30 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   ghostButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
+    paddingVertical: 0,
+    paddingHorizontal: 18,
+    height: 44,
+    borderRadius: 12,
     borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
   },
   ghostButtonText: {
-    fontSize: 12,
+    fontSize: 13,
+    fontFamily: 'Manrope_600SemiBold',
+  },
+  tinyButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 32,
+  },
+  tinyButtonText: {
+    fontSize: 11,
     fontFamily: 'Manrope_600SemiBold',
   },
   noteContent: {
@@ -5526,12 +6361,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
+    alignItems: 'center',
     padding: 20,
   },
   modalAvoid: {
     width: '100%',
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   modalContent: {
+    width: '100%',
+    maxWidth: 420,
     borderRadius: 18,
     padding: 18,
     borderWidth: 1,
